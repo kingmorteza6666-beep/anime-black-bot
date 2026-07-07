@@ -27,7 +27,7 @@ const s3 = new AWS.S3({
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
 
-// اتصال به دیتابیس فایربیس شما
+// اتصال به دیتابیس فایربیس
 const firebaseConfig = {
     apiKey: "AIzaSyAeD2Pc5q_LgDeWDEC7JCQeDEAzFlZRhiQ",
     authDomain: "anime-black-cefc0.firebaseapp.com",
@@ -41,23 +41,40 @@ if (!firebase.apps.length) {
     firebase.initializeApp(firebaseConfig);
 }
 const cloudDb = firebase.firestore();
-
-// 🚨 خط جادویی: مجبور کردن فایربیس به استفاده از پروتکل استاندارد روی سرور رندر
 cloudDb.settings({ experimentalForceLongPolling: true });
 
+// حافظه‌های موقت
 const memory = {};
-const adminState = {}; 
+const adminState = {}; // برای ذخیره وضعیت تغییر نام
+const userAuth = {};  // برای ذخیره وضعیت احراز هویت ادمین
 
-console.log('🤖 جارویس (نسخه فایربیس بدون قطعی) روشن شد...');
+console.log('🤖 جارویس (نسخه قفل مدیریت و کپی آسان) روشن شد...');
 
+// وقتی پیامی میاد
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-    // بررسی وضعیت تغییر نام فایل
+    // ۱. بررسی مرحله رمز عبور
+    if (userAuth[chatId] && userAuth[chatId].state === 'waiting_for_password') {
+        if (text === 'Mory') {
+            userAuth[chatId].state = 'admin'; // قفل باز شد!
+            bot.sendMessage(chatId, '✅ خوش آمدید رئیس! هویت شما تایید شد. پنل مدیریت اکنون در دسترس است. 🍷');
+            
+            // نمایش پنل مدیریت اصلی
+            return sendAdminPanel(chatId);
+        } else {
+            return bot.sendMessage(chatId, '❌ رمز عبور اشتباه است رئیس! لطفا مجددا تلاش کنید:');
+        }
+    }
+
+    // ۲. بررسی مرحله تغییر نام فایل
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_rename') {
+        // مطمئن می‌شویم فقط ادمین این کار را می‌کند
+        if (!userAuth[chatId] || userAuth[chatId].state !== 'admin') return;
+
         const oldKey = adminState[chatId].oldKey;
-        const newKey = text.trim().replace(/\s+/g, '-'); 
+        const newKey = text.trim().replace(/\s+/g, '-');
 
         if (!newKey) return bot.sendMessage(chatId, '❌ نام جدید نمی‌تواند خالی باشد.');
 
@@ -76,28 +93,33 @@ bot.on('message', async (msg) => {
             delete adminState[chatId];
             bot.sendMessage(chatId, `✅ **نام فایل با موفقیت تغییر کرد!**\n\nقدیم: \`${oldKey}\`\nجدید: \`${newKey}\`\n\n🔗 لینک جدید:\n${BASE_URL}/${newKey}`, { parse_mode: 'Markdown' });
         } catch (err) {
-            console.error(err);
             bot.sendMessage(chatId, '❌ خطا در تغییر نام فایل!');
         }
         return;
     }
 
+    // ۳. دستور شروع
     if (text === '/start') {
-        const welcomeMsg = 'سلام رئیس! 🎩\nبه پنل مدیریت پیشرفته انیمه‌بلک خوش آمدید.\n\nفایل ویدیو یا زیرنویس رو با فرمت زیر برام بفرست:\n\nRenegade Immortal S1EP148[1080].mkv\nhttp://link.com/file.mkv';
-        return bot.sendMessage(chatId, welcomeMsg, {
+        userAuth[chatId] = { state: 'selecting_role' };
+        
+        return bot.sendMessage(chatId, 'سلام! به ربات مدیریت انیمه‌بلک خوش آمدید. 🎩\nلطفاً نقش خود را انتخاب کنید:', {
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: '📁 مدیریت فایل‌ها', callback_data: 'list_files' },
-                        { text: '📊 وضعیت صندوقچه', callback_data: 'box_status' }
-                    ],
-                    [{ text: '🌐 مشاهده سایت', url: 'https://google.com' }]
+                        { text: '👤 کاربر عادی', callback_data: 'role_user' },
+                        { text: '👑 ادمین پروژه (Mory)', callback_data: 'role_admin' }
+                    ]
                 ]
             }
         });
     }
 
+    // ۴. پردازش فایل‌ها (فقط برای ادمین تایید شده مجاز است)
     if (text) {
+        if (!userAuth[chatId] || userAuth[chatId].state !== 'admin') {
+            return bot.sendMessage(chatId, '🔒 رئیس، شما هنوز وارد حساب مدیریت خود نشده‌اید. لطفاً ابتدا دستور /start را بزنید.');
+        }
+
         const lines = text.split('\n');
         if (lines.length < 2) return;
 
@@ -136,7 +158,8 @@ bot.on('message', async (msg) => {
                 let successMsg = `✅ **عملیات با موفقیت انجام شد رئیس!**\n\n`;
                 successMsg += `🎬 **انیمه:** ${animeName}\n`;
                 successMsg += `📺 **فصل:** ${season} | **قسمت:** ${episode}\n`;
-                successMsg += `🔗 **لینک:** ${finalLink}`;
+                successMsg += `🏷 **نام فایل تمیز شده (کلیک کنید تا کپی شود):**\n\`${safeFileName}\`\n\n`;
+                successMsg += `🔗 **لینک شما:** ${finalLink}`;
 
                 bot.editMessageText(successMsg, { 
                     chat_id: chatId, 
@@ -162,7 +185,25 @@ bot.on('callback_query', async (query) => {
     const messageId = query.message.message_id;
     const data = query.data;
 
-    // ۱. نمایش دکمه‌های چرخ‌دنده‌ای فایل‌ها
+    // انتخاب نقش کاربر عادی
+    if (data === 'role_user') {
+        bot.answerCallbackQuery(query.id);
+        return bot.sendMessage(chatId, 'فعلا سیستم آماده ارائه خدمات به کاربران نمیباشد 😅');
+    }
+
+    // انتخاب نقش ادمین (درخواست رمز عبور)
+    if (data === 'role_admin') {
+        userAuth[chatId] = { state: 'waiting_for_password' };
+        bot.answerCallbackQuery(query.id);
+        return bot.sendMessage(chatId, '🔑 لطفاً رمز عبور مدیریت را وارد کنید:');
+    }
+
+    // از اینجا به بعد دکمه‌ها نیاز به تایید ادمین دارند
+    if (!userAuth[chatId] || userAuth[chatId].state !== 'admin') {
+        return bot.answerCallbackQuery(query.id, { text: '🔒 لطفا ابتدا لاگین کنید!', show_alert: true });
+    }
+
+    // نمایش دکمه‌های چرخ‌دنده‌ای فایل‌ها
     if (data === 'list_files') {
         bot.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت لیست فایل‌ها...' });
 
@@ -203,7 +244,7 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // ۲. آنالیز کل حجم و وضعیت صندوقچه
+    // آنالیز کل حجم و وضعیت صندوقچه
     if (data === 'box_status') {
         bot.answerCallbackQuery(query.id, { text: '📊 در حال آنالیز وضعیت صندوقچه...' });
 
@@ -237,7 +278,7 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // ۳. نمایش جزئیات و دکمه‌های کنترلی فایل خاص
+    // نمایش جزئیات و دکمه‌های کنترلی فایل خاص
     if (data.startsWith('select_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
@@ -265,7 +306,7 @@ bot.on('callback_query', async (query) => {
         });
     }
 
-    // ۴. دریافت لینک دانلود مستقیم از لیست چشمی
+    // دریافت لینک دانلود مستقیم از لیست چشمی
     if (data.startsWith('getlink_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
@@ -273,14 +314,14 @@ bot.on('callback_query', async (query) => {
         if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
 
         const directLink = `${BASE_URL}/${fileKey}`;
-        let linkMsg = `🔗 **لینک دانلود مستقیم فایل انتخاب شده:**\n\n`;
+        let linkMsg = `🔗 **لینک دانلود مستقیم فایل انتخاب شده (کلیک کنید تا کپی شود):**\n\n`;
         linkMsg += `\`${directLink}\``;
 
         bot.sendMessage(chatId, linkMsg, { parse_mode: 'Markdown' });
         bot.answerCallbackQuery(query.id, { text: 'لینک ارسال شد!' });
     }
 
-    // ۵. عملیات حذف فایل از لیست چشمی
+    // عملیات حذف فایل از لیست چشمی
     if (data.startsWith('confirmdelete_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
@@ -294,7 +335,7 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // ۶. شروع فرآیند تغییر نام فایل
+    // شروع فرآیند تغییر نام فایل
     if (data.startsWith('rename_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
@@ -327,9 +368,9 @@ bot.on('callback_query', async (query) => {
     if (data.startsWith('addsite_')) {
         const fileId = data.split('_')[1];
         const fileInfo = memory[fileId];
-        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
+        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده.', show_alert: true });
 
-        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اتصال به فایربیس...' });
+        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اتصال به فایربیس گوگل...' });
 
         try {
             const docRef = cloudDb.collection("database").doc("main");
@@ -401,3 +442,18 @@ bot.on('callback_query', async (query) => {
         }
     }
 });
+
+// تابع کمکی برای فرستادن پنل مدیریت پس از ورود موفق
+function sendAdminPanel(chatId) {
+    bot.sendMessage(chatId, '🛠️ **منوی مدیریت ربات فعال است:**\nجهت دسترسی به کارهای چشمی یا وضعیت صندوقچه از دکمه‌های زیر استفاده کنید رئیس:', {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: '📁 مدیریت فایل‌ها', callback_data: 'list_files' },
+                    { text: '📊 وضعیت صندوقچه', callback_data: 'box_status' }
+                ],
+                [{ text: '🌐 مشاهده سایت', url: 'https://google.com' }]
+            ]
+        }
+    });
+                                                                                      }
