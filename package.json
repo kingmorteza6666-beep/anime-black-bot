@@ -1,6 +1,6 @@
 {
   "name": "anime-black-bot",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
@@ -9,6 +9,6 @@
     "axios": "^1.6.0",
     "aws-sdk": "^2.1693.0",
     "node-telegram-bot-api": "^0.64.0",
-    "mongodb": "^6.8.0"
+    "firebase": "^8.10.1"
   }
 }
