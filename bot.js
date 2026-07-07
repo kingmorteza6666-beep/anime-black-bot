@@ -2,7 +2,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const AWS = require('aws-sdk');
 const axios = require('axios');
 const http = require('http'); 
-const { MongoClient } = require('mongodb');
+const firebase = require('firebase/app');
+require('firebase/firestore');
 
 // سرور الکی برای بیدار نگه داشتن رندر
 const server = http.createServer((req, res) => {
@@ -26,12 +27,24 @@ const s3 = new AWS.S3({
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
 
-// آدرس دیتابیس مونگو دی‌بی شما
-const MONGO_URI = 'mongodb://admin:lTXwknrRLBHFape4g96b@remote-fanhab.runflare.com:31782/admin';
+// اتصال به دیتابیس فایربیس شما
+const firebaseConfig = {
+    apiKey: "AIzaSyAeD2Pc5q_LgDeWDEC7JCQeDEAzFlZRhiQ",
+    authDomain: "anime-black-cefc0.firebaseapp.com",
+    projectId: "anime-black-cefc0",
+    storageBucket: "anime-black-cefc0.firebasestorage.app",
+    messagingSenderId: "721270287867",
+    appId: "1:721270287867:web:87329ad1e081c8ca6fef5e"
+};
+
+if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+}
+const cloudDb = firebase.firestore();
 
 const memory = {};
 
-console.log('🤖 جارویس (نسخه متصل به دیتابیس ایران) روشن شد...');
+console.log('🤖 جارویس (نسخه پنل ابری) روشن شد...');
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -42,7 +55,10 @@ bot.on('message', async (msg) => {
         return bot.sendMessage(chatId, welcomeMsg, {
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: '🌐 مشاهده سایت', url: 'https://google.com' }]
+                    [
+                        { text: '📁 فایل‌های صندوقچه', callback_data: 'list_files' },
+                        { text: '🌐 مشاهده سایت', url: 'https://google.com' }
+                    ]
                 ]
             }
         });
@@ -112,6 +128,32 @@ bot.on('callback_query', async (query) => {
     const messageId = query.message.message_id;
     const data = query.data;
 
+    // نمایش لیست فایل‌های صندوقچه
+    if (data === 'list_files') {
+        bot.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت لیست فایل‌ها از آروان‌کلود...' });
+
+        try {
+            const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME, MaxKeys: 30 }).promise();
+            const files = s3Data.Contents;
+
+            if (!files || files.length === 0) {
+                return bot.sendMessage(chatId, '📂 صندوقچه آروان‌کلود شما کاملاً خالی است.');
+            }
+
+            let msg = `📂 **لیست ۳۰ فایل اخیر در صندوقچه:**\n\n`;
+            files.forEach((file, idx) => {
+                let sizeMB = (file.Size / (1024 * 1024)).toFixed(1);
+                msg += `${idx + 1}. \`${file.Key}\` (${sizeMB} MB)\n`;
+            });
+
+            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+        } catch (err) {
+            console.error(err);
+            bot.sendMessage(chatId, '❌ خطا در دریافت لیست فایل‌ها از آروان‌کلود!');
+        }
+    }
+
+    // دکمه حذف
     if (data.startsWith('delete_')) {
         const fileId = data.split('_')[1];
         const fileInfo = memory[fileId];
@@ -125,21 +167,19 @@ bot.on('callback_query', async (query) => {
         }
     }
 
+    // دکمه انتشار در سایت
     if (data.startsWith('addsite_')) {
         const fileId = data.split('_')[1];
         const fileInfo = memory[fileId];
         if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده.', show_alert: true });
 
-        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اتصال به دیتابیس ایران...' });
+        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اتصال به فایربیس گوگل...' });
 
-        let client;
         try {
-            client = new MongoClient(MONGO_URI);
-            await client.connect();
-            const db = client.db('animeblack');
-            const collection = db.collection('database');
+            const docRef = cloudDb.collection("database").doc("main");
+            const doc = await docRef.get();
+            let siteData = doc.data();
 
-            let siteData = await collection.findOne({ id: 'main' });
             if (!siteData) {
                 siteData = { id: 'main', team: [], translation: [], schedule: [], recommendations: [], settings: {} };
             }
@@ -190,7 +230,7 @@ bot.on('callback_query', async (query) => {
             }
 
             if (found) {
-                await collection.updateOne({ id: 'main' }, { $set: siteData }, { upsert: true });
+                await docRef.set(siteData);
                 bot.editMessageText(`✅ **با موفقیت در سایت منتشر شد!** 🌐\n\nنام: ${finalAnimeName}\nفصل: ${fileInfo.season} | قسمت: ${fileInfo.episode}`, {
                     chat_id: chatId,
                     message_id: messageId,
@@ -202,9 +242,7 @@ bot.on('callback_query', async (query) => {
 
         } catch (dbError) {
             console.error(dbError);
-            bot.sendMessage(chatId, '❌ خطا در برقراری ارتباط با دیتابیس ایران!');
-        } finally {
-            if (client) await client.close();
+            bot.sendMessage(chatId, '❌ خطا در برقراری ارتباط با فایربیس گوگل!');
         }
     }
 });
