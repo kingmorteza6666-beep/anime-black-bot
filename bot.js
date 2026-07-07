@@ -2,8 +2,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const AWS = require('aws-sdk');
 const axios = require('axios');
 const http = require('http'); 
-const firebase = require('firebase/app');
-require('firebase/firestore');
 
 // سرور الکی برای بیدار نگه داشتن رندر
 const server = http.createServer((req, res) => {
@@ -27,99 +25,40 @@ const s3 = new AWS.S3({
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
 
-// اتصال به دیتابیس فایربیس
-const firebaseConfig = {
-    apiKey: "AIzaSyAeD2Pc5q_LgDeWDEC7JCQeDEAzFlZRhiQ",
-    authDomain: "anime-black-cefc0.firebaseapp.com",
-    projectId: "anime-black-cefc0",
-    storageBucket: "anime-black-cefc0.firebasestorage.app",
-    messagingSenderId: "721270287867",
-    appId: "1:721270287867:web:87329ad1e081c8ca6fef5e"
-};
-
-if (!firebase.apps.length) {
-    firebase.initializeApp(firebaseConfig);
-}
-const cloudDb = firebase.firestore();
-cloudDb.settings({ experimentalForceLongPolling: true });
-
-// حافظه‌های موقت
 const memory = {};
-const adminState = {}; // برای ذخیره وضعیت تغییر نام
-const userAuth = {};  // برای ذخیره وضعیت احراز هویت ادمین
 
-console.log('🤖 جارویس (نسخه قفل مدیریت و کپی آسان) روشن شد...');
+// تابع ساخت نمودار باتری شارژ
+function getBatteryBar(percent) {
+    let filled = Math.round(percent / 10);
+    let bar = '■'.repeat(filled) + '□'.repeat(10 - filled);
+    return bar;
+}
 
-// وقتی پیامی میاد
+console.log('🤖 جارویس (نسخه پروژه محور مستقل) روشن شد...');
+
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
-    // ۱. بررسی مرحله رمز عبور
-    if (userAuth[chatId] && userAuth[chatId].state === 'waiting_for_password') {
-        if (text === 'Mory') {
-            userAuth[chatId].state = 'admin'; // قفل باز شد!
-            bot.sendMessage(chatId, '✅ خوش آمدید رئیس! هویت شما تایید شد. پنل مدیریت اکنون در دسترس است. 🍷');
-            
-            // نمایش پنل مدیریت اصلی
-            return sendAdminPanel(chatId);
-        } else {
-            return bot.sendMessage(chatId, '❌ رمز عبور اشتباه است رئیس! لطفا مجددا تلاش کنید:');
-        }
-    }
-
-    // ۲. بررسی مرحله تغییر نام فایل
-    if (adminState[chatId] && adminState[chatId].state === 'waiting_for_rename') {
-        // مطمئن می‌شویم فقط ادمین این کار را می‌کند
-        if (!userAuth[chatId] || userAuth[chatId].state !== 'admin') return;
-
-        const oldKey = adminState[chatId].oldKey;
-        const newKey = text.trim().replace(/\s+/g, '-');
-
-        if (!newKey) return bot.sendMessage(chatId, '❌ نام جدید نمی‌تواند خالی باشد.');
-
-        bot.sendMessage(chatId, '⚙️ در حال تغییر نام فایل در آروان‌کلود...');
-
-        try {
-            await s3.copyObject({
-                Bucket: BUCKET_NAME,
-                CopySource: encodeURI(`/${BUCKET_NAME}/${oldKey}`),
-                Key: newKey,
-                ACL: 'public-read'
-            }).promise();
-
-            await s3.deleteObject({ Bucket: BUCKET_NAME, Key: oldKey }).promise();
-
-            delete adminState[chatId];
-            bot.sendMessage(chatId, `✅ **نام فایل با موفقیت تغییر کرد!**\n\nقدیم: \`${oldKey}\`\nجدید: \`${newKey}\`\n\n🔗 لینک جدید:\n${BASE_URL}/${newKey}`, { parse_mode: 'Markdown' });
-        } catch (err) {
-            bot.sendMessage(chatId, '❌ خطا در تغییر نام فایل!');
-        }
-        return;
-    }
-
-    // ۳. دستور شروع
     if (text === '/start') {
-        userAuth[chatId] = { state: 'selecting_role' };
-        
-        return bot.sendMessage(chatId, 'سلام! به ربات مدیریت انیمه‌بلک خوش آمدید. 🎩\nلطفاً نقش خود را انتخاب کنید:', {
+        const welcomeMsg = 'سلام رئیس! 🎩\nبه پنل مدیریت مستقل و پیشرفته انیمه‌بلک خوش آمدید.\n\nفایل ویدیو یا زیرنویس رو با فرمت زیر برام بفرست:\n\nRenegade Immortal S1EP148[1080].mkv\nhttp://link.com/file.mkv';
+        return bot.sendMessage(chatId, welcomeMsg, {
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: '👤 کاربر عادی', callback_data: 'role_user' },
-                        { text: '👑 ادمین پروژه (Mory)', callback_data: 'role_admin' }
+                        { text: '📁 مدیریت فایل‌ها', callback_data: 'list_files' },
+                        { text: '🗂 پروژه‌های انیمه‌بلک', callback_data: 'proj_list' }
+                    ],
+                    [
+                        { text: '📊 وضعیت صندوقچه', callback_data: 'box_status' },
+                        { text: '🌐 مشاهده سایت', url: 'https://google.com' }
                     ]
                 ]
             }
         });
     }
 
-    // ۴. پردازش فایل‌ها (فقط برای ادمین تایید شده مجاز است)
     if (text) {
-        if (!userAuth[chatId] || userAuth[chatId].state !== 'admin') {
-            return bot.sendMessage(chatId, '🔒 رئیس، شما هنوز وارد حساب مدیریت خود نشده‌اید. لطفاً ابتدا دستور /start را بزنید.');
-        }
-
         const lines = text.split('\n');
         if (lines.length < 2) return;
 
@@ -129,7 +68,7 @@ bot.on('message', async (msg) => {
         const match = fileNameText.match(regex);
 
         if (match && downloadUrl.startsWith('http')) {
-            const loadingMsg = await bot.sendMessage(chatId, '⏳ در حال آپلود فایل به آروان‌کلود...');
+            const loadingMsg = await bot.sendMessage(chatId, '⏳ در حال آنالیز سایز فایل و شروع مکش...');
 
             let animeName = match[1].trim();
             let season = match[2];
@@ -138,6 +77,10 @@ bot.on('message', async (msg) => {
             let ext = match[5].toLowerCase();
 
             try {
+                // دریافت سایز دقیق فایل برای نمودار باتری
+                const head = await axios.head(downloadUrl);
+                const totalSize = parseInt(head.headers['content-length'] || 0);
+
                 const response = await axios({ method: 'get', url: downloadUrl, responseType: 'stream' });
 
                 const safeFileName = fileNameText
@@ -147,7 +90,31 @@ bot.on('message', async (msg) => {
                     .replace(/[^a-zA-Z0-9.\-_]/g, '');
 
                 const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
-                await s3.upload(params).promise();
+                
+                // شروع آپلود همراه با نمایش نمودار باتری زنده
+                const uploadRequest = s3.upload(params);
+                
+                let lastUpdate = 0;
+                uploadRequest.on('httpUploadProgress', (progress) => {
+                    if (totalSize > 0) {
+                        let percent = Math.round((progress.loaded / totalSize) * 100);
+                        percent = Math.min(100, Math.max(0, percent)); // محدود کردن بین ۰ تا ۱۰۰
+                        
+                        let now = Date.now();
+                        // محدود کردن آپدیت پیام به هر ۱.۵ ثانیه برای جلوگیری از بلاک شدن توسط تلگرام
+                        if (now - lastUpdate > 1500 || percent === 100) {
+                            lastUpdate = now;
+                            let batteryBar = getBatteryBar(percent);
+                            bot.editMessageText(`🔋 **در حال پمپاژ فایل به آروان‌کلود...**\n\n${batteryBar} **${percent}%**`, {
+                                chat_id: chatId,
+                                message_id: loadingMsg.message_id,
+                                parse_mode: 'Markdown'
+                            }).catch(() => {});
+                        }
+                    }
+                });
+
+                await uploadRequest.promise();
 
                 const finalLink = `${BASE_URL}/${safeFileName}`;
                 let isSub = ['zip', 'rar', 'srt'].includes(ext);
@@ -155,25 +122,24 @@ bot.on('message', async (msg) => {
                 const fileId = Date.now().toString();
                 memory[fileId] = { safeFileName, animeName, season, episode, quality, isSub, finalLink };
 
-                let successMsg = `✅ **عملیات با موفقیت انجام شد رئیس!**\n\n`;
+                let successMsg = `✅ **مکش فایل با موفقیت ۱۰۰٪ کامل شد رئیس!** 🔋\n\n`;
                 successMsg += `🎬 **انیمه:** ${animeName}\n`;
                 successMsg += `📺 **فصل:** ${season} | **قسمت:** ${episode}\n`;
                 successMsg += `🏷 **نام فایل تمیز شده (کلیک کنید تا کپی شود):**\n\`${safeFileName}\`\n\n`;
                 successMsg += `🔗 **لینک شما:** ${finalLink}`;
 
-                bot.editMessageText(successMsg, { 
-                    chat_id: chatId, 
-                    message_id: loadingMsg.message_id, 
+                bot.sendMessage(chatId, successMsg, { 
                     parse_mode: 'Markdown',
                     reply_markup: {
                         inline_keyboard: [
-                            [{ text: '🌐 انتشار خودکار در سایت', callback_data: `addsite_${fileId}` }],
                             [{ text: '🗑 حذف از سرور', callback_data: `delete_${fileId}` }]
                         ]
                     }
                 });
+
             } catch (error) {
-                bot.editMessageText('❌ خطا در آپلود فایل!', { chat_id: chatId, message_id: loadingMsg.message_id });
+                console.error(error);
+                bot.sendMessage(chatId, '❌ خطا در مکش و آپلود فایل!');
             }
         }
     }
@@ -185,35 +151,178 @@ bot.on('callback_query', async (query) => {
     const messageId = query.message.message_id;
     const data = query.data;
 
-    // انتخاب نقش کاربر عادی
-    if (data === 'role_user') {
-        bot.answerCallbackQuery(query.id);
-        return bot.sendMessage(chatId, 'فعلا سیستم آماده ارائه خدمات به کاربران نمیباشد 😅');
-    }
-
-    // انتخاب نقش ادمین (درخواست رمز عبور)
-    if (data === 'role_admin') {
-        userAuth[chatId] = { state: 'waiting_for_password' };
-        bot.answerCallbackQuery(query.id);
-        return bot.sendMessage(chatId, '🔑 لطفاً رمز عبور مدیریت را وارد کنید:');
-    }
-
-    // از اینجا به بعد دکمه‌ها نیاز به تایید ادمین دارند
-    if (!userAuth[chatId] || userAuth[chatId].state !== 'admin') {
-        return bot.answerCallbackQuery(query.id, { text: '🔒 لطفا ابتدا لاگین کنید!', show_alert: true });
-    }
-
-    // نمایش دکمه‌های چرخ‌دنده‌ای فایل‌ها
-    if (data === 'list_files') {
-        bot.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت لیست فایل‌ها...' });
+    // ۱. منوی پروژه‌های مستقل بر اساس اسکن اسامی در آروان‌کلود
+    if (data === 'proj_list') {
+        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اسکن کل صندوقچه آروان‌کلود...' });
 
         try {
-            const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME, MaxKeys: 15 }).promise();
-            const files = s3Data.Contents;
+            const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME }).promise();
+            const files = s3Data.Contents || [];
 
-            if (!files || files.length === 0) {
-                return bot.sendMessage(chatId, '📂 صندوقچه شما کاملاً خالی است.');
+            if (files.length === 0) {
+                return bot.sendMessage(chatId, '🗂 هیچ پروژه‌ای یافت نشد. صندوقچه خالی است!');
             }
+
+            // دسته‌بندی انیمه‌ها بر اساس فرمول الگوخوانی اسم فایل
+            const projects = {};
+            const regex = /^(.+?)-S(\d+)EP(\d+)(?:-(.+?))?\.(mkv|mp4|zip|rar|srt)$/i;
+
+            files.forEach(file => {
+                const match = file.Key.match(regex);
+                if (match) {
+                    let animeNameRaw = match[1];
+                    let animeNameClean = animeNameRaw.replace(/-/g, ' '); // تبدیل خط تیره به فاصله
+
+                    if (!projects[animeNameRaw]) {
+                        projects[animeNameRaw] = { name: animeNameClean, files: [], subs: [] };
+                    }
+
+                    let ext = match[5].toLowerCase();
+                    let isSub = ['zip', 'rar', 'srt'].includes(ext);
+
+                    if (isSub) {
+                        projects[animeNameRaw].subs.push({
+                            key: file.Key,
+                            season: match[2],
+                            ep: match[3],
+                            link: `${BASE_URL}/${file.Key}`
+                        });
+                    } else {
+                        projects[animeNameRaw].files.push({
+                            key: file.Key,
+                            season: match[2],
+                            ep: match[3],
+                            quality: match[4] || '1080',
+                            link: `${BASE_URL}/${file.Key}`
+                        });
+                    }
+                }
+            });
+
+            // ذخیره موقت پروژه‌های اسکن شده در حافظه
+            memory['scanned_projects'] = projects;
+
+            let keyboard = [];
+            Object.keys(projects).forEach(slug => {
+                keyboard.push([{ text: `🎬 ${projects[slug].name}`, callback_data: `pselect_${slug}` }]);
+            });
+
+            if (keyboard.length === 0) {
+                return bot.sendMessage(chatId, '🗂 فایل‌های صندوقچه با الگوی استاندارد (مثال: Name-S1EP2) همخوانی ندارند!');
+            }
+
+            bot.sendMessage(chatId, '🗂 **لیست پروژه‌های فعال شناسایی شده در صندوقچه:**\nلطفا پروژه مد نظر خود را انتخاب کنید:', {
+                reply_markup: { inline_keyboard: keyboard }
+            });
+
+        } catch (err) {
+            console.error(err);
+            bot.sendMessage(chatId, '❌ خطا در اسکن پروژه‌های صندوقچه!');
+        }
+    }
+
+    // ۲. انتخاب پروژه خاص
+    if (data.startsWith('pselect_')) {
+        const slug = data.split('_')[1];
+        const projects = memory['scanned_projects'];
+        if (!projects || !projects[slug]) return bot.answerCallbackQuery(query.id, { text: 'خطا! لطفاً مجدد لیست پروژه‌ها را بزنید.', show_alert: true });
+
+        const p = projects[slug];
+        let infoMsg = `🎬 **پروژه:** ${p.name}\n`;
+        infoMsg += `🎞 **تعداد ویدیوها:** ${p.files.length}\n`;
+        infoMsg += `📝 **تعداد زیرنویس‌ها:** ${p.subs.length}\n\n`;
+        infoMsg += `👇 کدام بخش را می‌خواهید رئیس؟`;
+
+        bot.sendMessage(chatId, infoMsg, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '🎥 قسمت‌ها (ویدیوها)', callback_data: `pfiles_${slug}` },
+                        { text: '📝 زیرنویس‌ها', callback_data: `psubs_${slug}` }
+                    ],
+                    [{ text: '⬅️ بازگشت به لیست پروژه‌ها', callback_data: 'proj_list' }]
+                ]
+            }
+        });
+        bot.answerCallbackQuery(query.id);
+    }
+
+    // ۳. نمایش زیرنویس‌های یک پروژه
+    if (data.startsWith('psubs_')) {
+        const slug = data.split('_')[1];
+        const projects = memory['scanned_projects'];
+        if (!projects || !projects[slug]) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
+
+        const p = projects[slug];
+        if (p.subs.length === 0) {
+            return bot.sendMessage(chatId, '📝 هیچ زیرنویسی برای این انیمه یافت نشد!');
+        }
+
+        let subMsg = `📝 **زیرنویس‌های انیمه ${p.name}:**\n\n`;
+        p.subs.forEach(s => {
+            subMsg += `🔹 **فصل ${s.season} قسمت ${s.ep}**:\n\`${s.link}\`\n\n`;
+        });
+
+        bot.sendMessage(chatId, subMsg, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id);
+    }
+
+    // ۴. نمایش دکمه کیفیت‌های ویدیوهای یک پروژه
+    if (data.startsWith('pfiles_')) {
+        const slug = data.split('_')[1];
+        const projects = memory['scanned_projects'];
+        if (!projects || !projects[slug]) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
+
+        const p = projects[slug];
+        if (p.files.length === 0) {
+            return bot.sendMessage(chatId, '🎥 هیچ ویدیویی برای این انیمه یافت نشد!');
+        }
+
+        // استخراج کیفیت‌های موجود برای این انیمه
+        const qualities = [...new Set(p.files.map(f => f.quality))];
+
+        let keyboard = [];
+        qualities.forEach(q => {
+            keyboard.push([{ text: `🎥 کیفیت ${q}p`, callback_data: `pq_files_${slug}_${q}` }]);
+        });
+        keyboard.push([{ text: '⬅️ بازگشت', callback_data: `pselect_${slug}` }]);
+
+        bot.sendMessage(chatId, `🎞 **کیفیت مد نظر خود را برای انیمه ${p.name} انتخاب کنید:**`, {
+            reply_markup: { inline_keyboard: keyboard }
+        });
+        bot.answerCallbackQuery(query.id);
+    }
+
+    // ۵. نمایش لینک قسمت‌های انیمه بر اساس کیفیت انتخاب شده
+    if (data.startsWith('pq_files_')) {
+        const parts = data.split('_');
+        const slug = parts[2];
+        const q = parts[3];
+
+        const projects = memory['scanned_projects'];
+        if (!projects || !projects[slug]) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
+
+        const p = projects[slug];
+        // فیلتر کردن فایل‌ها بر اساس کیفیت انتخاب شده
+        const filteredFiles = p.files.filter(f => f.quality === q);
+
+        let fileMsg = `🎥 **قسمت‌های کیفیت ${q}p انیمه ${p.name}:**\n\n`;
+        filteredFiles.forEach(f => {
+            fileMsg += `🔹 **فصل ${f.season} قسمت ${f.ep}**:\n\`${f.link}\`\n\n`;
+        });
+
+        bot.sendMessage(chatId, fileMsg, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id);
+    }
+
+    // دکمه‌های عمومی دیگر (لیست فایل‌های چشمی و وضعیت صندوقچه)
+    if (data === 'list_files') {
+        bot.answerCallbackQuery(query.id);
+        try {
+            const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME, MaxKeys: 15 }).promise();
+            const files = s3Data.Contents || [];
+
+            if (files.length === 0) return bot.sendMessage(chatId, '📂 صندوقچه شما کاملاً خالی است.');
 
             let msg = `📁 **پنل مدیریت فایل چشمی (۱۵ فایل اخیر):**\n\n`;
             let keyboard = [];
@@ -222,7 +331,6 @@ bot.on('callback_query', async (query) => {
             files.forEach((file, idx) => {
                 let sizeMB = (file.Size / (1024 * 1024)).toFixed(1);
                 msg += `**[ ${idx + 1} ]** \`${file.Key}\` (${sizeMB} MB)\n`;
-                
                 memory[`fkey_${idx}`] = file.Key;
 
                 tempRow.push({ text: `${idx + 1}`, callback_data: `select_${idx}` });
@@ -232,70 +340,47 @@ bot.on('callback_query', async (query) => {
                 }
             });
 
-            msg += `\n👇 جهت مدیریت هر فایل، شماره آن را از منوی زیر انتخاب کنید:`;
-
-            bot.sendMessage(chatId, msg, { 
-                parse_mode: 'Markdown',
-                reply_markup: { inline_keyboard: keyboard }
-            });
+            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
         } catch (err) {
-            console.error(err);
             bot.sendMessage(chatId, '❌ خطا در ارتباط با آروان‌کلود!');
         }
     }
 
-    // آنالیز کل حجم و وضعیت صندوقچه
     if (data === 'box_status') {
-        bot.answerCallbackQuery(query.id, { text: '📊 در حال آنالیز وضعیت صندوقچه...' });
-
+        bot.answerCallbackQuery(query.id);
         try {
             const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME }).promise();
             const files = s3Data.Contents || [];
-
             let totalBytes = 0;
-            let fileCount = files.length;
-
-            files.forEach(file => {
-                totalBytes += file.Size;
-            });
+            files.forEach(f => totalBytes += f.Size);
 
             let totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
             let totalGB = (totalBytes / (1024 * 1024 * 1024)).toFixed(3);
-
             let estimatedCost = Math.round(parseFloat(totalGB) * 200);
 
             let statusMsg = `📊 **وضعیت صندوقچه ابری انیمه‌بلک:**\n\n`;
             statusMsg += `📦 **نام صندوقچه:** \`${BUCKET_NAME}\`\n`;
-            statusMsg += `🗂 **تعداد کل فایل‌های ذخیره شده:** ${fileCount} فایل\n`;
+            statusMsg += `🗂 **تعداد کل فایل‌ها:** ${files.length} فایل\n`;
             statusMsg += `💾 **کل حجم اشغال شده:** ${totalGB} گیگابایت (${totalMB} مگابایت)\n`;
-            statusMsg += `💸 **هزینه تقریبـی ماهانه شما:** ${estimatedCost.toLocaleString('fa-IR')} تومان\n\n`;
-            statusMsg += `💡 *نکته:* با فعال کردن قانون چرخه حیات ۴۸ ساعته، فایل‌ها اتوماتیک حذف می‌شوند و هزینه شما همیشه نزدیک به صفر خواهد ماند!`;
+            statusMsg += `💸 **هزینه تقریبـی ماهانه:** ${estimatedCost.toLocaleString('fa-IR')} تومان\n`;
 
             bot.sendMessage(chatId, statusMsg, { parse_mode: 'Markdown' });
         } catch (err) {
-            console.error(err);
-            bot.sendMessage(chatId, '❌ خطا در دریافت اطلاعات وضعیت صندوقچه!');
+            bot.sendMessage(chatId, '❌ خطا!');
         }
     }
 
-    // نمایش جزئیات و دکمه‌های کنترلی فایل خاص
     if (data.startsWith('select_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
+        if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
 
-        if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده است.', show_alert: true });
-
-        let detailMsg = `🔍 **فایل شماره [ ${parseInt(idx) + 1} ]**\n\n`;
-        detailMsg += `📁 **نام فایل:** \`${fileKey}\`\n\n`;
-        detailMsg += `👇 چه عملیاتی روی این فایل انجام دهم رئیس؟`;
-
+        let detailMsg = `🔍 **فایل شماره [ ${parseInt(idx) + 1} ]**\n\n📁 **نام فایل:** \`${fileKey}\`\n\n👇 چه عملیاتی انجام دهم؟`;
         bot.sendMessage(chatId, detailMsg, {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
-                    [
-                        { text: '🔗 دریافت لینک مستقیم', callback_data: `getlink_${idx}` }
-                    ],
+                    [{ text: '🔗 دریافت لینک مستقیم', callback_data: `getlink_${idx}` }],
                     [
                         { text: '🗑 حذف کامل فایل', callback_data: `confirmdelete_${idx}` },
                         { text: '✏️ تغییر نام فایل', callback_data: `rename_${idx}` }
@@ -306,154 +391,44 @@ bot.on('callback_query', async (query) => {
         });
     }
 
-    // دریافت لینک دانلود مستقیم از لیست چشمی
     if (data.startsWith('getlink_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
-
         if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
 
         const directLink = `${BASE_URL}/${fileKey}`;
-        let linkMsg = `🔗 **لینک دانلود مستقیم فایل انتخاب شده (کلیک کنید تا کپی شود):**\n\n`;
-        linkMsg += `\`${directLink}\``;
-
-        bot.sendMessage(chatId, linkMsg, { parse_mode: 'Markdown' });
-        bot.answerCallbackQuery(query.id, { text: 'لینک ارسال شد!' });
+        bot.sendMessage(chatId, `🔗 **لینک مستقیم کپی‌شدنی:**\n\n\`${directLink}\``, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id);
     }
 
-    // عملیات حذف فایل از لیست چشمی
     if (data.startsWith('confirmdelete_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
-
         try {
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileKey }).promise();
             bot.sendMessage(chatId, `🗑 **فایل با موفقیت حذف شد!**\n\n\`${fileKey}\``, { parse_mode: 'Markdown' });
-            bot.answerCallbackQuery(query.id, { text: 'فایل نابود شد!' });
         } catch (err) {
-            bot.answerCallbackQuery(query.id, { text: '❌ خطا در حذف!', show_alert: true });
+            bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
         }
     }
 
-    // شروع فرآیند تغییر نام فایل
     if (data.startsWith('rename_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
-
-        adminState[chatId] = {
-            state: 'waiting_for_rename',
-            oldKey: fileKey,
-            msgId: messageId
-        };
-
-        bot.sendMessage(chatId, `✏️ **نام جدید را به همراه پسوند بفرستید:**\n\nقدیم: \`${fileKey}\`\n\n*(مثال: New-Name-S1EP150[1080].mkv)*`, { parse_mode: 'Markdown' });
-        bot.answerCallbackQuery(query.id, { text: 'منتظر نام جدید...' });
+        adminState[chatId] = { state: 'waiting_for_rename', oldKey: fileKey, msgId: messageId };
+        bot.sendMessage(chatId, `✏️ **نام جدید را به همراه پسوند بفرستید:**\n\nقدیم: \`${fileKey}\``, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id);
     }
 
-    // دکمه حذف فایلی که تازه آپلود شده
     if (data.startsWith('delete_')) {
         const fileId = data.split('_')[1];
         const fileInfo = memory[fileId];
         if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
-
         try {
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileInfo.safeFileName }).promise();
             bot.editMessageText(`🗑 **فایل با موفقیت حذف شد!**`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
         } catch (err) {
-            bot.answerCallbackQuery(query.id, { text: '❌ خطا!', show_alert: true });
-        }
-    }
-
-    // دکمه انتشار خودکار در سایت
-    if (data.startsWith('addsite_')) {
-        const fileId = data.split('_')[1];
-        const fileInfo = memory[fileId];
-        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده.', show_alert: true });
-
-        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اتصال به فایربیس گوگل...' });
-
-        try {
-            const docRef = cloudDb.collection("database").doc("main");
-            const doc = await docRef.get();
-            let siteData = doc.data();
-
-            if (!siteData) {
-                siteData = { id: 'main', team: [], translation: [], schedule: [], recommendations: [], settings: {} };
-            }
-
-            let found = false;
-            let finalAnimeName = "";
-
-            if (siteData.team) {
-                siteData.team.forEach(t => {
-                    t.projects.forEach(p => {
-                        let searchName = fileInfo.animeName.toLowerCase().replace(/[^a-z0-9]/g, '');
-                        let pNameClean = (p.nameEn || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-                        let match = (pNameClean.includes(searchName) || searchName.includes(pNameClean));
-                        
-                        if (!match && p.aliases) {
-                            match = p.aliases.some(a => {
-                                let aClean = a.toLowerCase().replace(/[^a-z0-9]/g, '');
-                                return aClean.includes(searchName) || searchName.includes(aClean);
-                            });
-                        }
-
-                        if (match) {
-                            found = true;
-                            finalAnimeName = p.name;
-                            let s = fileInfo.season;
-                            let ep = fileInfo.episode;
-
-                            if (!p.seasons[s]) {
-                                p.seasons[s] = { type: 'فصل', epCount: 12, year: '2024', duration: '24 دقیقه', img: 'https://via.placeholder.com/150', status: 'airing', subs: {}, files: {} };
-                            }
-
-                            if (fileInfo.isSub) {
-                                if (!p.seasons[s].subs) p.seasons[s].subs = {};
-                                p.seasons[s].subs[ep] = fileInfo.finalLink;
-
-                                if (siteData.translation) {
-                                    siteData.translation = siteData.translation.filter(tr => !(tr.pId === p.id && tr.ep == ep));
-                                }
-                            } else {
-                                if (!p.seasons[s].files) p.seasons[s].files = {};
-                                if (!p.seasons[s].files[ep]) p.seasons[s].files[ep] = {};
-                                let qKey = fileInfo.quality.replace('p', '');
-                                p.seasons[s].files[ep][qKey] = fileInfo.finalLink;
-                            }
-                        }
-                    });
-                });
-            }
-
-            if (found) {
-                await docRef.set(siteData);
-                bot.editMessageText(`✅ **با موفقیت در سایت منتشر شد!** 🌐\n\nنام: ${finalAnimeName}\nفصل: ${fileInfo.season} | قسمت: ${fileInfo.episode}`, {
-                    chat_id: chatId,
-                    message_id: messageId,
-                    parse_mode: 'Markdown'
-                });
-            } else {
-                bot.sendMessage(chatId, `❌ انیمه‌ای با اسم "${fileInfo.animeName}" پیدا نشد!`);
-            }
-        } catch (dbError) {
-            console.error(dbError);
-            bot.sendMessage(chatId, '❌ خطا در برقراری ارتباط با فایربیس!');
+            bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
         }
     }
 });
-
-// تابع کمکی برای فرستادن پنل مدیریت پس از ورود موفق
-function sendAdminPanel(chatId) {
-    bot.sendMessage(chatId, '🛠️ **منوی مدیریت ربات فعال است:**\nجهت دسترسی به کارهای چشمی یا وضعیت صندوقچه از دکمه‌های زیر استفاده کنید رئیس:', {
-        reply_markup: {
-            inline_keyboard: [
-                [
-                    { text: '📁 مدیریت فایل‌ها', callback_data: 'list_files' },
-                    { text: '📊 وضعیت صندوقچه', callback_data: 'box_status' }
-                ],
-                [{ text: '🌐 مشاهده سایت', url: 'https://google.com' }]
-            ]
-        }
-    });
-                                                                                      }
