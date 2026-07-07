@@ -41,11 +41,10 @@ if (!firebase.apps.length) {
 }
 const cloudDb = firebase.firestore();
 
-// حافظه موقت برای دکمه‌ها و وضعیت‌های ادمین
 const memory = {};
-const adminState = {}; // برای ذخیره وضعیت‌هایی مثل درحال تغییر نام
+const adminState = {}; 
 
-console.log('🤖 جارویس (نسخه پنل فایل چشمی) روشن شد...');
+console.log('🤖 جارویس (نسخه آنالیزور صندوقچه) روشن شد...');
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -54,15 +53,13 @@ bot.on('message', async (msg) => {
     // بررسی وضعیت تغییر نام فایل
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_rename') {
         const oldKey = adminState[chatId].oldKey;
-        const msgId = adminState[chatId].msgId;
-        const newKey = text.trim().replace(/\s+/g, '-'); // تمیز کردن نام جدید
+        const newKey = text.trim().replace(/\s+/g, '-'); 
 
         if (!newKey) return bot.sendMessage(chatId, '❌ نام جدید نمی‌تواند خالی باشد.');
 
-        bot.sendMessage(chatId, '⚙️ در حال تغییر نام فایل در آروان‌کلود... لطفا صبر کنید.');
+        bot.sendMessage(chatId, '⚙️ در حال تغییر نام فایل در آروان‌کلود...');
 
         try {
-            // در S3 برای تغییر نام باید فایل را کپی کنیم و قبلی را حذف کنیم
             await s3.copyObject({
                 Bucket: BUCKET_NAME,
                 CopySource: encodeURI(`/${BUCKET_NAME}/${oldKey}`),
@@ -72,13 +69,11 @@ bot.on('message', async (msg) => {
 
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: oldKey }).promise();
 
-            // پاک کردن وضعیت
             delete adminState[chatId];
-
             bot.sendMessage(chatId, `✅ **نام فایل با موفقیت تغییر کرد!**\n\nقدیم: \`${oldKey}\`\nجدید: \`${newKey}\`\n\n🔗 لینک جدید:\n${BASE_URL}/${newKey}`, { parse_mode: 'Markdown' });
         } catch (err) {
             console.error(err);
-            bot.sendMessage(chatId, '❌ خطا در تغییر نام فایل! مطمئن شوید فرمت فایل (مثلاً mkv.) را در انتها نوشته‌اید.');
+            bot.sendMessage(chatId, '❌ خطا در تغییر نام فایل!');
         }
         return;
     }
@@ -89,9 +84,10 @@ bot.on('message', async (msg) => {
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: '📁 مدیریت چشمی فایل‌ها', callback_data: 'list_files' },
-                        { text: '🌐 مشاهده سایت', url: 'https://google.com' }
-                    ]
+                        { text: '📁 مدیریت فایل‌ها', callback_data: 'list_files' },
+                        { text: '📊 وضعیت صندوقچه', callback_data: 'box_status' }
+                    ],
+                    [{ text: '🌐 مشاهده سایت', url: 'https://google.com' }]
                 ]
             }
         });
@@ -162,7 +158,7 @@ bot.on('callback_query', async (query) => {
     const messageId = query.message.message_id;
     const data = query.data;
 
-    // ۱. نمایش لیست فایل‌ها با دکمه‌های چرخ‌دنده‌ای
+    // ۱. نمایش دکمه‌های چرخ‌دنده‌ای فایل‌ها
     if (data === 'list_files') {
         bot.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت لیست فایل‌ها...' });
 
@@ -182,10 +178,8 @@ bot.on('callback_query', async (query) => {
                 let sizeMB = (file.Size / (1024 * 1024)).toFixed(1);
                 msg += `**[ ${idx + 1} ]** \`${file.Key}\` (${sizeMB} MB)\n`;
                 
-                // ذخیره موقت کلید فایل در حافظه
                 memory[`fkey_${idx}`] = file.Key;
 
-                // چیدن دکمه‌های شیشه‌ای انتخاب فایل (هر ردیف ۵ دکمه)
                 tempRow.push({ text: `${idx + 1}`, callback_data: `select_${idx}` });
                 if (tempRow.length === 5 || idx === files.length - 1) {
                     keyboard.push(tempRow);
@@ -205,14 +199,49 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // ۲. انتخاب فایل خاص از لیست چشمی
+    // ۲. آنالیز کل حجم و وضعیت صندوقچه (ایده جدید!)
+    if (data === 'box_status') {
+        bot.answerCallbackQuery(query.id, { text: '📊 در حال آنالیز وضعیت صندوقچه...' });
+
+        try {
+            const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME }).promise();
+            const files = s3Data.Contents || [];
+
+            let totalBytes = 0;
+            let fileCount = files.length;
+
+            files.forEach(file => {
+                totalBytes += file.Size;
+            });
+
+            let totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
+            let totalGB = (totalBytes / (1024 * 1024 * 1024)).toFixed(3);
+
+            // محاسبه هزینه بر اساس تعرفه فرضی آروان (حدود ۲۰۰ تک‌تومان به ازای هر گیگابایت در ماه)
+            let estimatedCost = Math.round(parseFloat(totalGB) * 200);
+
+            let statusMsg = `📊 **وضعیت صندوقچه ابری انیمه‌بلک:**\n\n`;
+            statusMsg += `📦 **نام صندوقچه:** \`${BUCKET_NAME}\`\n`;
+            statusMsg += `🗂 **تعداد کل فایل‌های ذخیره شده:** ${fileCount} فایل\n`;
+            statusMsg += `💾 **کل حجم اشغال شده:** ${totalGB} گیگابایت (${totalMB} مگابایت)\n`;
+            statusMsg += `💸 **هزینه تقریبـی ماهانه شما:** ${estimatedCost.toLocaleString('fa-IR')} تومان\n\n`;
+            statusMsg += `💡 *نکته:* با فعال کردن قانون چرخه حیات ۴۸ ساعته، فایل‌ها اتوماتیک حذف می‌شوند و هزینه شما همیشه نزدیک به صفر خواهد ماند!`;
+
+            bot.sendMessage(chatId, statusMsg, { parse_mode: 'Markdown' });
+        } catch (err) {
+            console.error(err);
+            bot.sendMessage(chatId, '❌ خطا در دریافت اطلاعات وضعیت صندوقچه!');
+        }
+    }
+
+    // ۳. نمایش جزئیات و دکمه‌های کنترلی فایل خاص
     if (data.startsWith('select_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
 
-        if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده، دوباره دکمه لیست را بزنید.', show_alert: true });
+        if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده است.', show_alert: true });
 
-        let detailMsg = `🔍 **فایل انتخاب شده شماره [ ${parseInt(idx) + 1} ]**\n\n`;
+        let detailMsg = `🔍 **فایل شماره [ ${parseInt(idx) + 1} ]**\n\n`;
         detailMsg += `📁 **نام فایل:** \`${fileKey}\`\n\n`;
         detailMsg += `👇 چه عملیاتی روی این فایل انجام دهم رئیس؟`;
 
@@ -220,6 +249,9 @@ bot.on('callback_query', async (query) => {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
+                    [
+                        { text: '🔗 دریافت لینک مستقیم', callback_data: `getlink_${idx}` }
+                    ],
                     [
                         { text: '🗑 حذف کامل فایل', callback_data: `confirmdelete_${idx}` },
                         { text: '✏️ تغییر نام فایل', callback_data: `rename_${idx}` }
@@ -230,21 +262,36 @@ bot.on('callback_query', async (query) => {
         });
     }
 
-    // ۳. عملیات حذف فایل از لیست چشمی
+    // ۴. دریافت لینک دانلود مستقیم از لیست چشمی
+    if (data.startsWith('getlink_')) {
+        const idx = data.split('_')[1];
+        const fileKey = memory[`fkey_${idx}`];
+
+        if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
+
+        const directLink = `${BASE_URL}/${fileKey}`;
+        let linkMsg = `🔗 **لینک دانلود مستقیم فایل انتخاب شده:**\n\n`;
+        linkMsg += `\`${directLink}\``;
+
+        bot.sendMessage(chatId, linkMsg, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id, { text: 'لینک ارسال شد!' });
+    }
+
+    // ۵. عملیات حذف فایل از لیست چشمی
     if (data.startsWith('confirmdelete_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
 
         try {
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileKey }).promise();
-            bot.sendMessage(chatId, `🗑 **فایل با موفقیت حذف شد!**\n\nنام فایل حذف شده:\n\`${fileKey}\``, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `🗑 **فایل با موفقیت حذف شد!**\n\n\`${fileKey}\``, { parse_mode: 'Markdown' });
             bot.answerCallbackQuery(query.id, { text: 'فایل نابود شد!' });
         } catch (err) {
             bot.answerCallbackQuery(query.id, { text: '❌ خطا در حذف!', show_alert: true });
         }
     }
 
-    // ۴. شروع فرآیند تغییر نام فایل
+    // ۶. شروع فرآیند تغییر نام فایل
     if (data.startsWith('rename_')) {
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
