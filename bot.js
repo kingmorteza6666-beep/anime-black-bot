@@ -27,6 +27,7 @@ const s3 = new AWS.S3({
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
 
+// اتصال به دیتابیس فایربیس شما
 const firebaseConfig = {
     apiKey: "AIzaSyAeD2Pc5q_LgDeWDEC7JCQeDEAzFlZRhiQ",
     authDomain: "anime-black-cefc0.firebaseapp.com",
@@ -41,10 +42,13 @@ if (!firebase.apps.length) {
 }
 const cloudDb = firebase.firestore();
 
+// 🚨 خط جادویی: مجبور کردن فایربیس به استفاده از پروتکل استاندارد روی سرور رندر
+cloudDb.settings({ experimentalForceLongPolling: true });
+
 const memory = {};
 const adminState = {}; 
 
-console.log('🤖 جارویس (نسخه آنالیزور صندوقچه) روشن شد...');
+console.log('🤖 جارویس (نسخه فایربیس بدون قطعی) روشن شد...');
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
@@ -199,7 +203,7 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // ۲. آنالیز کل حجم و وضعیت صندوقچه (ایده جدید!)
+    // ۲. آنالیز کل حجم و وضعیت صندوقچه
     if (data === 'box_status') {
         bot.answerCallbackQuery(query.id, { text: '📊 در حال آنالیز وضعیت صندوقچه...' });
 
@@ -217,7 +221,6 @@ bot.on('callback_query', async (query) => {
             let totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
             let totalGB = (totalBytes / (1024 * 1024 * 1024)).toFixed(3);
 
-            // محاسبه هزینه بر اساس تعرفه فرضی آروان (حدود ۲۰۰ تک‌تومان به ازای هر گیگابایت در ماه)
             let estimatedCost = Math.round(parseFloat(totalGB) * 200);
 
             let statusMsg = `📊 **وضعیت صندوقچه ابری انیمه‌بلک:**\n\n`;
