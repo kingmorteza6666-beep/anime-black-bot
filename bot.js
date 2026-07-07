@@ -27,7 +27,6 @@ const s3 = new AWS.S3({
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
 
-// اتصال به دیتابیس فایربیس شما
 const firebaseConfig = {
     apiKey: "AIzaSyAeD2Pc5q_LgDeWDEC7JCQeDEAzFlZRhiQ",
     authDomain: "anime-black-cefc0.firebaseapp.com",
@@ -42,13 +41,47 @@ if (!firebase.apps.length) {
 }
 const cloudDb = firebase.firestore();
 
+// حافظه موقت برای دکمه‌ها و وضعیت‌های ادمین
 const memory = {};
+const adminState = {}; // برای ذخیره وضعیت‌هایی مثل درحال تغییر نام
 
-console.log('🤖 جارویس (نسخه پنل ابری) روشن شد...');
+console.log('🤖 جارویس (نسخه پنل فایل چشمی) روشن شد...');
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
+
+    // بررسی وضعیت تغییر نام فایل
+    if (adminState[chatId] && adminState[chatId].state === 'waiting_for_rename') {
+        const oldKey = adminState[chatId].oldKey;
+        const msgId = adminState[chatId].msgId;
+        const newKey = text.trim().replace(/\s+/g, '-'); // تمیز کردن نام جدید
+
+        if (!newKey) return bot.sendMessage(chatId, '❌ نام جدید نمی‌تواند خالی باشد.');
+
+        bot.sendMessage(chatId, '⚙️ در حال تغییر نام فایل در آروان‌کلود... لطفا صبر کنید.');
+
+        try {
+            // در S3 برای تغییر نام باید فایل را کپی کنیم و قبلی را حذف کنیم
+            await s3.copyObject({
+                Bucket: BUCKET_NAME,
+                CopySource: encodeURI(`/${BUCKET_NAME}/${oldKey}`),
+                Key: newKey,
+                ACL: 'public-read'
+            }).promise();
+
+            await s3.deleteObject({ Bucket: BUCKET_NAME, Key: oldKey }).promise();
+
+            // پاک کردن وضعیت
+            delete adminState[chatId];
+
+            bot.sendMessage(chatId, `✅ **نام فایل با موفقیت تغییر کرد!**\n\nقدیم: \`${oldKey}\`\nجدید: \`${newKey}\`\n\n🔗 لینک جدید:\n${BASE_URL}/${newKey}`, { parse_mode: 'Markdown' });
+        } catch (err) {
+            console.error(err);
+            bot.sendMessage(chatId, '❌ خطا در تغییر نام فایل! مطمئن شوید فرمت فایل (مثلاً mkv.) را در انتها نوشته‌اید.');
+        }
+        return;
+    }
 
     if (text === '/start') {
         const welcomeMsg = 'سلام رئیس! 🎩\nبه پنل مدیریت پیشرفته انیمه‌بلک خوش آمدید.\n\nفایل ویدیو یا زیرنویس رو با فرمت زیر برام بفرست:\n\nRenegade Immortal S1EP148[1080].mkv\nhttp://link.com/file.mkv';
@@ -56,7 +89,7 @@ bot.on('message', async (msg) => {
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: '📁 فایل‌های صندوقچه', callback_data: 'list_files' },
+                        { text: '📁 مدیریت چشمی فایل‌ها', callback_data: 'list_files' },
                         { text: '🌐 مشاهده سایت', url: 'https://google.com' }
                     ]
                 ]
@@ -123,57 +156,130 @@ bot.on('message', async (msg) => {
     }
 });
 
+// مدیریت کلیک روی دکمه‌های شیشه‌ای
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
     const data = query.data;
 
-    // نمایش لیست فایل‌های صندوقچه
+    // ۱. نمایش لیست فایل‌ها با دکمه‌های چرخ‌دنده‌ای
     if (data === 'list_files') {
-        bot.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت لیست فایل‌ها از آروان‌کلود...' });
+        bot.answerCallbackQuery(query.id, { text: '⏳ در حال دریافت لیست فایل‌ها...' });
 
         try {
-            const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME, MaxKeys: 30 }).promise();
+            const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME, MaxKeys: 15 }).promise();
             const files = s3Data.Contents;
 
             if (!files || files.length === 0) {
-                return bot.sendMessage(chatId, '📂 صندوقچه آروان‌کلود شما کاملاً خالی است.');
+                return bot.sendMessage(chatId, '📂 صندوقچه شما کاملاً خالی است.');
             }
 
-            let msg = `📂 **لیست ۳۰ فایل اخیر در صندوقچه:**\n\n`;
+            let msg = `📁 **پنل مدیریت فایل چشمی (۱۵ فایل اخیر):**\n\n`;
+            let keyboard = [];
+            let tempRow = [];
+
             files.forEach((file, idx) => {
                 let sizeMB = (file.Size / (1024 * 1024)).toFixed(1);
-                msg += `${idx + 1}. \`${file.Key}\` (${sizeMB} MB)\n`;
+                msg += `**[ ${idx + 1} ]** \`${file.Key}\` (${sizeMB} MB)\n`;
+                
+                // ذخیره موقت کلید فایل در حافظه
+                memory[`fkey_${idx}`] = file.Key;
+
+                // چیدن دکمه‌های شیشه‌ای انتخاب فایل (هر ردیف ۵ دکمه)
+                tempRow.push({ text: `${idx + 1}`, callback_data: `select_${idx}` });
+                if (tempRow.length === 5 || idx === files.length - 1) {
+                    keyboard.push(tempRow);
+                    tempRow = [];
+                }
             });
 
-            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+            msg += `\n👇 جهت مدیریت هر فایل، شماره آن را از منوی زیر انتخاب کنید:`;
+
+            bot.sendMessage(chatId, msg, { 
+                parse_mode: 'Markdown',
+                reply_markup: { inline_keyboard: keyboard }
+            });
         } catch (err) {
             console.error(err);
-            bot.sendMessage(chatId, '❌ خطا در دریافت لیست فایل‌ها از آروان‌کلود!');
+            bot.sendMessage(chatId, '❌ خطا در ارتباط با آروان‌کلود!');
         }
     }
 
-    // دکمه حذف
-    if (data.startsWith('delete_')) {
-        const fileId = data.split('_')[1];
-        const fileInfo = memory[fileId];
-        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده.', show_alert: true });
+    // ۲. انتخاب فایل خاص از لیست چشمی
+    if (data.startsWith('select_')) {
+        const idx = data.split('_')[1];
+        const fileKey = memory[`fkey_${idx}`];
+
+        if (!fileKey) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده، دوباره دکمه لیست را بزنید.', show_alert: true });
+
+        let detailMsg = `🔍 **فایل انتخاب شده شماره [ ${parseInt(idx) + 1} ]**\n\n`;
+        detailMsg += `📁 **نام فایل:** \`${fileKey}\`\n\n`;
+        detailMsg += `👇 چه عملیاتی روی این فایل انجام دهم رئیس؟`;
+
+        bot.sendMessage(chatId, detailMsg, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: '🗑 حذف کامل فایل', callback_data: `confirmdelete_${idx}` },
+                        { text: '✏️ تغییر نام فایل', callback_data: `rename_${idx}` }
+                    ],
+                    [{ text: '⬅️ بازگشت به لیست', callback_data: 'list_files' }]
+                ]
+            }
+        });
+    }
+
+    // ۳. عملیات حذف فایل از لیست چشمی
+    if (data.startsWith('confirmdelete_')) {
+        const idx = data.split('_')[1];
+        const fileKey = memory[`fkey_${idx}`];
 
         try {
-            await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileInfo.safeFileName }).promise();
-            bot.editMessageText(`🗑 **فایل با موفقیت حذف شد!**`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileKey }).promise();
+            bot.sendMessage(chatId, `🗑 **فایل با موفقیت حذف شد!**\n\nنام فایل حذف شده:\n\`${fileKey}\``, { parse_mode: 'Markdown' });
+            bot.answerCallbackQuery(query.id, { text: 'فایل نابود شد!' });
         } catch (err) {
             bot.answerCallbackQuery(query.id, { text: '❌ خطا در حذف!', show_alert: true });
         }
     }
 
-    // دکمه انتشار در سایت
+    // ۴. شروع فرآیند تغییر نام فایل
+    if (data.startsWith('rename_')) {
+        const idx = data.split('_')[1];
+        const fileKey = memory[`fkey_${idx}`];
+
+        adminState[chatId] = {
+            state: 'waiting_for_rename',
+            oldKey: fileKey,
+            msgId: messageId
+        };
+
+        bot.sendMessage(chatId, `✏️ **نام جدید را به همراه پسوند بفرستید:**\n\nقدیم: \`${fileKey}\`\n\n*(مثال: New-Name-S1EP150[1080].mkv)*`, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id, { text: 'منتظر نام جدید...' });
+    }
+
+    // دکمه حذف فایلی که تازه آپلود شده
+    if (data.startsWith('delete_')) {
+        const fileId = data.split('_')[1];
+        const fileInfo = memory[fileId];
+        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
+
+        try {
+            await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileInfo.safeFileName }).promise();
+            bot.editMessageText(`🗑 **فایل با موفقیت حذف شد!**`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+        } catch (err) {
+            bot.answerCallbackQuery(query.id, { text: '❌ خطا!', show_alert: true });
+        }
+    }
+
+    // دکمه انتشار خودکار در سایت
     if (data.startsWith('addsite_')) {
         const fileId = data.split('_')[1];
         const fileInfo = memory[fileId];
-        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه پاک شده.', show_alert: true });
+        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا!', show_alert: true });
 
-        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اتصال به فایربیس گوگل...' });
+        bot.answerCallbackQuery(query.id, { text: '⏳ در حال اتصال به فایربیس...' });
 
         try {
             const docRef = cloudDb.collection("database").doc("main");
@@ -237,12 +343,11 @@ bot.on('callback_query', async (query) => {
                     parse_mode: 'Markdown'
                 });
             } else {
-                bot.sendMessage(chatId, `❌ رئیس، انیمه‌ای با اسم "${fileInfo.animeName}" در دیتابیس پیدا نکردم! لطفا اول آن را در پنل ادمین سایت بسازید.`);
+                bot.sendMessage(chatId, `❌ انیمه‌ای با اسم "${fileInfo.animeName}" پیدا نشد!`);
             }
-
         } catch (dbError) {
             console.error(dbError);
-            bot.sendMessage(chatId, '❌ خطا در برقراری ارتباط با فایربیس گوگل!');
+            bot.sendMessage(chatId, '❌ خطا در برقراری ارتباط با فایربیس!');
         }
     }
 });
