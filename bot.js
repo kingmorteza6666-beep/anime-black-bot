@@ -129,7 +129,7 @@ bot.on('message', async (msg) => {
         const match = fileNameText.match(regex);
 
         if (match && downloadUrl.startsWith('http')) {
-            const loadingMsg = await bot.sendMessage(chatId, '⏳ در حال مکش فایل به آروان‌کلود...');
+            const loadingMsg = await bot.sendMessage(chatId, '⏳ در حال آپلود فایل به آروان‌کلود...');
 
             let animeName = match[1].trim();
             let season = match[2];
