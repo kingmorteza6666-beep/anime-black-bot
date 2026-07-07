@@ -72,7 +72,11 @@ bot.on('message', async (msg) => {
                     responseType: 'stream'
                 });
 
-                const safeFileName = fileNameText.replace(/\s+/g, '-');
+                const safeFileName = fileNameText
+    .replace(/\s+/g, '-')               // تبدیل فاصله‌ها به خط تیره
+    .replace(/\[/g, '-')                // تبدیل کروشه باز [ به خط تیره
+    .replace(/\]/g, '')                 // حذف کروشه بسته ]
+    .replace(/[^a-zA-Z0-9.\-_]/g, '');  // حذف بقیه علامت‌های عجیب غریب برای ایمنی ۱۰۰٪
 
                 const params = {
                     Bucket: BUCKET_NAME,
