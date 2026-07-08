@@ -36,42 +36,60 @@ const firebaseConfig = {
     appId: "1:721270287867:web:87329ad1e081c8ca6fef5e"
 };
 
-if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
+}
 const cloudDb = firebase.firestore();
 cloudDb.settings({ experimentalForceLongPolling: true });
 
 const memory = {};
 const adminState = {}; 
 
+// تابع ساخت نمودار لودینگ جدید
 function getProgressBar(percent) {
     let filled = Math.round(percent / 10);
-    return '■'.repeat(filled) + '□'.repeat(10 - filled) + ' ' + percent + '%';
+    let bar = '■'.repeat(filled) + '□'.repeat(10 - filled) + percent + '%';
+    return bar;
 }
 
+// تابع هوشمند استخراج اطلاعات قالب پست (مقاوم در برابر تغییر کیبورد و آیکون‌ها)
 function parsePostTemplate(text) {
-    const extract = (key) => {
-        const regex = new RegExp(`${key}\\s*:\\s*(.*)`, 'i');
-        const match = text.match(regex);
-        return match ? match[1].trim() : 'نامشخص';
+    // نرمال‌سازی کامل حروف عربی، اردو و فارسی برای تطابق ۱۰۰ درصدی
+    const normalized = text
+        .replace(/ے/g, 'ی')
+        .replace(/ي/g, 'ی')
+        .replace(/ة/g, 'ه')
+        .replace(/\u200c/g, ' ') // حذف نیم‌فاصله‌های مزاحم
+        .replace(/\s+/g, ' ');   // استانداردسازی فاصله‌ها
+
+    const extract = (keywords) => {
+        for (let kw of keywords) {
+            // ساخت ریجکس برای پیدا کردن کلید واژه بدون حساسیت به فاصله و کاراکترهای تزیینی
+            const regex = new RegExp(`${kw}\\s*:\\s*(.*)`, 'i');
+            const match = normalized.match(regex);
+            if (match) return match[1].trim();
+        }
+        return 'نامشخص';
     };
+
     return {
-        titleEn: extract('❀عنوان انگلیسے'),
-        alias: extract('❀معروف به'),
-        titleZh: extract('❀عنوان چینے'),
-        titleFa: extract('❀عنوان فارسے'),
-        status: extract('✿وضعیت'),
-        aired: extract('✿پخش شده'),
-        eps: extract('✿تعداد قسمت'),
-        duration: extract('✿مدت زمان'),
-        age: extract('✿رده سنے'),
-        rating: extract('✿امتیاز'),
-        lang: extract('✿زبان'),
-        platform: extract('✿پلتفرم پخش'),
-        genres: extract('✿ژانرها🎭')
+        titleEn: extract(['عنوان انگلیسی', 'عنوان انگلیسے', 'titleEn', 'title_en']),
+        alias: extract(['معروف به', 'alias', 'known as']),
+        titleZh: extract(['عنوان چینی', 'عنوان چینے', 'titleZh', 'title_zh']),
+        titleFa: extract(['عنوان فارسی', 'عنوان فارسے', 'titleFa', 'title_fa']),
+        status: extract(['وضعیت', 'status']),
+        aired: extract(['پخش شده', 'aired', 'year']),
+        eps: extract(['تعداد قسمت', 'episodes', 'eps']),
+        duration: extract(['مدت زمان', 'duration', 'time']),
+        age: extract(['رده سنی', 'رده سنے', 'age']),
+        rating: extract(['امتیاز', 'rating']),
+        lang: extract(['زبان', 'language', 'lang']),
+        platform: extract(['پلتفرم پخش', 'platform']),
+        genres: extract(['ژانرها🎭', 'ژانرها', 'ژانر', 'genres'])
     };
 }
 
-// تابع هوشمند اسکن صندوقچه
+// اسکنر هوشمند آروان‌کلود
 async function scanS3Projects() {
     if (memory['scanned_projects']) return memory['scanned_projects'];
     const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME }).promise();
@@ -95,9 +113,9 @@ async function scanS3Projects() {
     return projects;
 }
 
-console.log('🤖 جارویس (نسخه اینلاین و پست‌ساز) روشن شد...');
+console.log('🤖 جارویس (نسخه سیستم هوشمند نرمالایز) روشن شد...');
 
-// سیستم اینلاین کوئری (جستجوی شناور روی کیبورد)
+// اینلاین کوئری (جستجوی شناور روی کیبورد)
 bot.on('inline_query', async (query) => {
     const queryId = query.id;
     const queryStr = query.query.toLowerCase().trim();
@@ -121,8 +139,6 @@ bot.on('inline_query', async (query) => {
                 if (match) {
                     let postMsg = `🎥\n\nعنوان هاے دیگر 𒅒\n\n❀عنوان انگلیسے : ${p.titleEn}\n❀معروف به : ${p.alias}\n❀عنوان چینے : ${p.titleZh}\n❀عنوان فارسے : ${p.titleFa}\n\n✿وضعیت : ${p.status}\n✿پخش شده : ${p.aired}\n✿تعداد قسمت : ${p.eps}\n✿مدت زمان : ${p.duration}\n✿رده سنے : ${p.age}\n✿امتیاز : ${p.rating}\n✿زبان : ${p.lang}\n✿پلتفرم پخش : ${p.platform}\n✿ژانرها🎭 : ${p.genres}\n\n❖فصل ها: [1درحال‌پخش]\n\n⌬ Synopsis\n➼ @godofanimeblack`;
                     let fullText = `[‌](${p.img})${postMsg}`;
-
-                    // پیدا کردن شناسه اسکن شده صندوقچه (اسلاگ فایل)
                     let searchSlug = p.titleEn.replace(/\s+/g, '-');
 
                     results.push({
@@ -146,7 +162,7 @@ bot.on('inline_query', async (query) => {
         }
         bot.answerInlineQuery(queryId, results.slice(0, 40), { cache_time: 0 });
     } catch (err) {
-        console.error('خطای اینلاین:', err);
+        console.error(err);
     }
 });
 
@@ -154,19 +170,25 @@ bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
+    // ایجاد پست جدید: دریافت عکس
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_post_img') {
         adminState[chatId].img = text.trim();
         adminState[chatId].state = 'waiting_for_post_text';
-        return bot.sendMessage(chatId, '📝 عالیه! حالا قالب متنی پست را دقیقاً با همان فرمت زیبایی که فرستادی برام بفرست تا برات تجزیه‌اش کنم:');
+        return bot.sendMessage(chatId, '📝 عالیه! حالا قالب متنی پست را بفرست تا برات تجزیه‌اش کنم:');
     }
 
+    // ایجاد پست جدید: دریافت متن و ساخت اسلاگ امن
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_post_text') {
-        bot.sendMessage(chatId, '⚙️ در حال تحلیل قالب متنی و ثبت در دیتابیس ابری...');
+        bot.sendMessage(chatId, '⚙️ در حال تحلیل قالب متنی و ثبت در فایربیس ابری...');
         try {
             const parsedData = parsePostTemplate(text);
             parsedData.img = adminState[chatId].img;
             
-            const slug = parsedData.titleEn.toLowerCase().replace(/[^a-z0-9]/g, '-');
+            // تولید اسلاگ تمیز. اگر انگلیسی خالی بود از زمان استفاده میکند تا خطا ندهد
+            let slug = parsedData.titleEn.toLowerCase().replace(/[^a-z0-9]/g, '-');
+            if (!slug || slug.replace(/-/g, '') === '') {
+                slug = 'project-' + Date.now();
+            }
 
             const docRef = cloudDb.collection("database").doc("main");
             const doc = await docRef.get();
@@ -177,13 +199,15 @@ bot.on('message', async (msg) => {
 
             await docRef.set(siteData);
             delete adminState[chatId];
-            bot.sendMessage(chatId, `✅ **پست پروژه با موفقیت ایجاد و در دیتابیس ثبت شد!**\n\n🎬 نام انگلیسی: ${parsedData.titleEn}\n🎥 نام فارسی: ${parsedData.titleFa}`);
+            bot.sendMessage(chatId, `✅ **پست با موفقیت ثبت شد!**\n\n🎬 نام انگلیسی: ${parsedData.titleEn}\n🎥 نام فارسی: ${parsedData.titleFa}`);
         } catch (err) {
-            bot.sendMessage(chatId, '❌ خطا در تحلیل یا ذخیره قالب پست!');
+            console.error(err);
+            bot.sendMessage(chatId, `❌ **خطا در ثبت پست!**\n\nعلت خطا:\n\`${err.message}\``, { parse_mode: 'Markdown' });
         }
         return;
     }
 
+    // جستجوی دستی کاربر
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_search_query') {
         const queryStr = text.trim().toLowerCase().replace(/[^a-z0-9آ-ی]/g, '');
         bot.sendMessage(chatId, '🔍 در حال جستجو...');
@@ -256,6 +280,7 @@ bot.on('message', async (msg) => {
         });
     }
 
+    // فرآیند آپلود فایل ادمین
     if (text) {
         const lines = text.split('\n');
         if (lines.length < 2) return;
@@ -276,9 +301,15 @@ bot.on('message', async (msg) => {
             try {
                 const head = await axios.head(downloadUrl);
                 const totalSize = parseInt(head.headers['content-length'] || 0);
+
                 const response = await axios({ method: 'get', url: downloadUrl, responseType: 'stream' });
 
-                const safeFileName = fileNameText.replace(/\s+/g, '-').replace(/\[/g, '-').replace(/\]/g, '').replace(/[^a-zA-Z0-9.\-_]/g, '');
+                const safeFileName = fileNameText
+                    .replace(/\s+/g, '-')
+                    .replace(/\[/g, '-')
+                    .replace(/\]/g, '')
+                    .replace(/[^a-zA-Z0-9.\-_]/g, '');
+
                 const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
                 
                 const uploadRequest = s3.upload(params);
@@ -305,9 +336,7 @@ bot.on('message', async (msg) => {
                 successMsg += `🏷 **نام فایل تمیز شده:**\n\`${safeFileName}\`\n\n`;
                 successMsg += `🔗 **لینک شما:** ${finalLink}`;
 
-                // پاک کردن کش اسکن شده تا دفعه بعد اسکن تازه انجام شود
                 delete memory['scanned_projects'];
-
                 bot.sendMessage(chatId, successMsg, { parse_mode: 'Markdown' });
             } catch (error) {
                 bot.sendMessage(chatId, '❌ خطا در آپلود فایل!');
@@ -332,7 +361,7 @@ bot.on('callback_query', async (query) => {
         return bot.sendMessage(chatId, '📸 **رئیس، لطفاً لینک مستقیم عکس کاور این انیمه را برام بفرستید:**');
     }
 
-    // لیست کارهای پیشنهادی (پست‌های فایربیس)
+    // کارهای پیشنهادی (پست‌های فایربیس)
     if (data === 'suggested_posts') {
         bot.answerCallbackQuery(query.id, { text: '⏳ دریافت لیست انیمه‌ها...' });
         try {
@@ -352,7 +381,7 @@ bot.on('callback_query', async (query) => {
         }
     }
 
-    // نمایش پست خاص از کارهای پیشنهادی
+    // نمایش پست کارهای پیشنهادی
     if (data.startsWith('showpost_')) {
         const slug = data.split('_')[1];
         bot.answerCallbackQuery(query.id);
@@ -378,7 +407,7 @@ bot.on('callback_query', async (query) => {
         } catch (err) {}
     }
 
-    // نمایش زیرنویس‌ها (با اسکن هوشمند S3)
+    // نمایش زیرنویس‌ها
     if (data.startsWith('psubs_')) {
         bot.answerCallbackQuery(query.id, { text: '⏳ اسکن زیرنویس‌ها...' });
         const slug = data.split('_')[1];
@@ -391,7 +420,7 @@ bot.on('callback_query', async (query) => {
         bot.sendMessage(chatId, subMsg, { parse_mode: 'Markdown' });
     }
 
-    // نمایش کیفیت‌ها (با اسکن هوشمند S3)
+    // نمایش کیفیت‌ها
     if (data.startsWith('pfiles_')) {
         bot.answerCallbackQuery(query.id);
         const slug = data.split('_')[1];
