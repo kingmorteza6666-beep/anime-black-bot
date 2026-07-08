@@ -3,7 +3,7 @@ const AWS = require('aws-sdk');
 const axios = require('axios');
 const http = require('http'); 
 
-// برطرف کردن خطاهای کنسول پکیج تلگرام
+// برطرف کردن خطاهای کنسول
 process.env.NTBA_FIX_319 = 1;
 
 const server = http.createServer((req, res) => {
@@ -15,6 +15,15 @@ server.listen(PORT, () => console.log(`🌐 پورت ${PORT} باز شد!`));
 
 const token = '8972261860:AAEA-0ajtUyUaFPmWWt2Kuzu7w8Rcpyy2YE';
 const bot = new TelegramBot(token, { polling: true });
+
+// مدیریت ارورهای تداخل (برای جلوگیری از اسپم شدن لاگ‌ها)
+bot.on('polling_error', (error) => {
+    if (error.code === 'ETELEGRAM' && error.message.includes('409 Conflict')) {
+        console.log('⚠️ اخطار: ربات در جای دیگری هم روشن است! (تداخل)');
+    } else {
+        console.error(error.message);
+    }
+});
 
 const s3 = new AWS.S3({
     endpoint: 'https://s3.ir-thr-at1.arvanstorage.ir',
@@ -30,7 +39,6 @@ const sponsorChannel = '@godofanimeblack';
 const memory = {};
 const adminState = {}; 
 
-// سپرهای ضد پیام تکراری (جلوگیری از ارسال چندباره توسط تلگرام)
 const processedMessages = new Set();
 const processedQueries = new Set();
 
@@ -104,7 +112,7 @@ function sendStartMenu(chatId) {
     });
 }
 
-console.log('🤖 جارویس (نسخه ضداسپم و بدون ارور) روشن شد...');
+console.log('🤖 جارویس (نسخه ضدکِرَش و ایمن) روشن شد...');
 
 bot.on('inline_query', async (query) => {
     const queryId = query.id;
@@ -157,10 +165,9 @@ bot.on('message', async (msg) => {
     const messageId = msg.message_id;
     const text = msg.text;
 
-    // سپر ضد اسپم (اگر این پیام رو قبلاً دیدیم، دیگه پردازش نمیکنیم)
     if (processedMessages.has(messageId)) return;
     processedMessages.add(messageId);
-    setTimeout(() => processedMessages.delete(messageId), 300000); // پاک کردن از حافظه بعد از ۵ دقیقه
+    setTimeout(() => processedMessages.delete(messageId), 300000); 
 
     if (text === '/start') {
         delete adminState[chatId]; 
@@ -241,9 +248,8 @@ bot.on('message', async (msg) => {
 
                 const safeFileName = fileNameText.replace(/\s+/g, '-').replace(/\[/g, '-').replace(/\]/g, '').replace(/[^a-zA-Z0-9.\-_]/g, '');
                 
-                // سیستم توربو شارژ: ۴ کارگر همزمان با تکه‌های ۵ مگابایتی (سرعت فضایی و رم سبک)
-const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
-const uploadOptions = { partSize: 5 * 1024 * 1024, queueSize: 4 };
+                const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
+                const uploadOptions = { partSize: 5 * 1024 * 1024, queueSize: 4 }; 
                 
                 const uploadRequest = s3.upload(params, uploadOptions);
                 let lastUpdate = 0;
@@ -253,7 +259,6 @@ const uploadOptions = { partSize: 5 * 1024 * 1024, queueSize: 4 };
                         let percent = Math.round((progress.loaded / totalSize) * 100);
                         percent = Math.min(100, Math.max(0, percent));
                         let now = Date.now();
-                        // آپدیت نوار هر ۲ ثانیه برای جلوگیری از ارور تلگرام
                         if (now - lastUpdate > 2000 || percent === 100) {
                             lastUpdate = now;
                             bot.editMessageText(`🔋 **در حال پمپاژ فایل به آروان‌کلود...**\n\n${getProgressBar(percent)}`, { chat_id: chatId, message_id: loadingMsg.message_id }).catch(() => {});
@@ -261,7 +266,6 @@ const uploadOptions = { partSize: 5 * 1024 * 1024, queueSize: 4 };
                     }
                 });
 
-                // منتظر پایان آپلود
                 await uploadRequest.promise();
                 const finalLink = `${BASE_URL}/${safeFileName}`;
 
@@ -284,23 +288,43 @@ const uploadOptions = { partSize: 5 * 1024 * 1024, queueSize: 4 };
                 memory[Date.now()] = { safeFileName: safeFileName }; 
             } catch (error) {
                 console.error(error);
-                bot.sendMessage(chatId, '❌ خطا در آپلود فایل! ممکنه حجم فایل برای سرور رایگان زیاد باشه یا فرمت نامعتبر باشه.');
+                bot.sendMessage(chatId, '❌ خطا در آپلود فایل! ممکنه حجم فایل برای سرور رایگان زیاد باشه.');
             }
         }
     }
 });
 
 bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const userId = query.from.id;
-    const messageId = query.message.message_id;
-    const data = query.data;
     const queryId = query.id;
+    const userId = query.from.id;
+    const data = query.data;
 
-    // سپر ضد دکمه‌زنی تکراری (اسپم کلیک)
     if (processedQueries.has(queryId)) return;
     processedQueries.add(queryId);
-    setTimeout(() => processedQueries.delete(queryId), 10000); 
+    setTimeout(() => processedQueries.delete(queryId), 5000); 
+
+    // مسیریاب ایمن: تشخیص می‌دهد کلیک از PV بوده یا گروه (اینلاین)
+    let chatId = userId; 
+    let messageId = null;
+    let isInline = false;
+
+    if (query.message) {
+        chatId = query.message.chat.id;
+        messageId = query.message.message_id;
+    } else {
+        isInline = true;
+    }
+
+    // تابع ارسال ایمن (اگر کاربر ربات رو استارت نکرده باشه بهش پیام میده)
+    const safeSend = async (text, options = {}) => {
+        try {
+            await bot.sendMessage(chatId, text, options);
+        } catch (err) {
+            if (isInline) {
+                bot.answerCallbackQuery(queryId, { text: '❌ برای دریافت فایل باید اول ربات را در PV استارت بزنید!', show_alert: true }).catch(()=>{});
+            }
+        }
+    };
 
     if (data === 'check_join') {
         const isJoined = await checkForceJoin(userId);
@@ -323,11 +347,10 @@ bot.on('callback_query', async (query) => {
     if (data === 'search_start') {
         adminState[chatId] = { state: 'waiting_for_search_query' };
         bot.answerCallbackQuery(query.id);
-        return bot.sendMessage(chatId, '🔍 **لطفاً نام انیمه مورد نظر خود را بنویسید:**\n*(مثلاً: Renegade یا Immortal)*');
+        return safeSend('🔍 **لطفاً نام انیمه مورد نظر خود را بنویسید:**\n*(مثلاً: Renegade یا Immortal)*');
     }
 
-    // دکمه کارهای پیشنهادی مستقیماً لیست پروژه‌های موجود در سرور را می‌آورد
-    if (data === 'proj_list' || data === 'suggested_posts') {
+    if (data === 'proj_list') {
         bot.answerCallbackQuery(query.id, { text: '⏳ دریافت لیست انیمه‌ها از آروان‌کلود...' });
         try {
             const projects = await scanS3Projects();
@@ -335,10 +358,10 @@ bot.on('callback_query', async (query) => {
             Object.keys(projects).forEach(slug => {
                 keyboard.push([{ text: `🎬 ${projects[slug].name}`, callback_data: `pselect_${slug}` }]);
             });
-            if (keyboard.length === 0) return bot.sendMessage(chatId, '🗂 آرشیو خالی است!');
-            bot.sendMessage(chatId, '✨ **لیست تمام کارهای موجود در هاب:**', { reply_markup: { inline_keyboard: keyboard } });
+            if (keyboard.length === 0) return safeSend('🗂 آرشیو خالی است!');
+            safeSend('✨ **لیست تمام کارهای موجود در هاب:**', { reply_markup: { inline_keyboard: keyboard } });
         } catch (err) {
-            bot.sendMessage(chatId, '❌ خطا!');
+            safeSend('❌ خطا!');
         }
     }
 
@@ -347,14 +370,14 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
         const projects = await scanS3Projects();
         const p = projects[slug];
-        if (!p) return bot.sendMessage(chatId, '❌ خطا در بارگیری انیمه!');
+        if (!p) return safeSend('❌ خطا در بارگیری انیمه!');
 
         let textMsg = `🎬 **انیمه:** ${p.name}\n\n`;
         textMsg += `🎞 **تعداد ویدیوها:** ${p.files.length} فایل\n`;
         textMsg += `📝 **تعداد زیرنویس‌ها:** ${p.subs.length} فایل\n\n`;
         textMsg += `👇 جهت دریافت فایل‌ها از دکمه‌های زیر استفاده کنید:`;
 
-        bot.sendMessage(chatId, textMsg, {
+        safeSend(textMsg, {
             reply_markup: {
                 inline_keyboard: [
                     [
@@ -371,11 +394,11 @@ bot.on('callback_query', async (query) => {
         const slug = data.split('_')[1];
         const projects = await scanS3Projects();
         const p = projects[slug];
-        if (!p || p.subs.length === 0) return bot.sendMessage(chatId, '📝 هیچ زیرنویسی یافت نشد!');
+        if (!p || p.subs.length === 0) return safeSend('📝 هیچ زیرنویسی یافت نشد!');
 
         let subMsg = `📝 **زیرنویس‌های انیمه ${p.name}:**\n\n`;
         p.subs.forEach(s => { subMsg += `🔹 **قسمت ${s.ep}**:\n\`${s.link}\`\n\n`; });
-        bot.sendMessage(chatId, subMsg, { parse_mode: 'Markdown' });
+        safeSend(subMsg, { parse_mode: 'Markdown' });
     }
 
     if (data.startsWith('pfiles_')) {
@@ -383,12 +406,12 @@ bot.on('callback_query', async (query) => {
         const slug = data.split('_')[1];
         const projects = await scanS3Projects();
         const p = projects[slug];
-        if (!p || p.files.length === 0) return bot.sendMessage(chatId, '🎥 هیچ قسمتی یافت نشد!');
+        if (!p || p.files.length === 0) return safeSend('🎥 هیچ قسمتی یافت نشد!');
 
         const qualities = [...new Set(p.files.map(f => f.quality))].sort((a,b) => parseInt(b) - parseInt(a));
         let keyboard = [];
         qualities.forEach(q => { keyboard.push([{ text: `🎥 کیفیت ${q}p`, callback_data: `pq_files_${slug}_${q}` }]); });
-        bot.sendMessage(chatId, `🎞 **کیفیت مورد نظر را انتخاب کنید:**`, { reply_markup: { inline_keyboard: keyboard } });
+        safeSend(`🎞 **کیفیت مورد نظر را انتخاب کنید:**`, { reply_markup: { inline_keyboard: keyboard } });
     }
 
     if (data.startsWith('pq_files_')) {
@@ -410,7 +433,7 @@ bot.on('callback_query', async (query) => {
                 tempRow = [];
             }
         });
-        bot.sendMessage(chatId, `🎞 **لیست قسمت‌های انیمه ${p.name} (کیفیت ${q}p):**`, { reply_markup: { inline_keyboard: keyboard } });
+        safeSend(`🎞 **لیست قسمت‌های انیمه ${p.name} (کیفیت ${q}p):**`, { reply_markup: { inline_keyboard: keyboard } });
     }
 
     if (data.startsWith('epdl_')) {
@@ -424,16 +447,16 @@ bot.on('callback_query', async (query) => {
 
         const fileExact = p.files.find(f => f.ep === epNum && f.quality === qRequested);
         if (fileExact) {
-            bot.sendMessage(chatId, `🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت ${qRequested}p):**\n\n\`${fileExact.link}\``, { parse_mode: 'Markdown' });
+            safeSend(`🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت ${qRequested}p):**\n\n\`${fileExact.link}\``, { parse_mode: 'Markdown' });
         } else {
             const availableQualities = p.files.filter(f => f.ep === epNum).map(f => f.quality);
             if (availableQualities.length > 0) {
                 const altQ = availableQualities[0];
-                bot.sendMessage(chatId, `⚠️ **کیفیت ${qRequested}p موجود نیست!**\nاما کیفیت **${altQ}p** موجود است. مایلید دانلود کنید؟`, {
+                safeSend(`⚠️ **کیفیت ${qRequested}p موجود نیست!**\nاما کیفیت **${altQ}p** موجود است. مایلید دانلود کنید؟`, {
                     reply_markup: { inline_keyboard: [[ { text: `✅ دانلود کیفیت ${altQ}p`, callback_data: `force_dl_${slug}_${epNum}_${altQ}` } ]] }
                 });
             } else {
-                bot.sendMessage(chatId, '❌ هیچ کیفیتی برای این قسمت آپلود نشده است!');
+                safeSend('❌ هیچ کیفیتی برای این قسمت آپلود نشده است!');
             }
         }
     }
@@ -445,18 +468,16 @@ bot.on('callback_query', async (query) => {
         const epNum = parts[3];
         const qAlt = parts[4];
         const projects = await scanS3Projects();
-        const p = projects[slug];
-        const fileExact = p.files.find(f => f.ep === epNum && f.quality === qAlt);
-        if (fileExact) bot.sendMessage(chatId, `🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت ${qAlt}p):**\n\n\`${fileExact.link}\``, { parse_mode: 'Markdown' });
+        const fileExact = projects[slug].files.find(f => f.ep === epNum && f.quality === qAlt);
+        if (fileExact) safeSend(`🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت ${qAlt}p):**\n\n\`${fileExact.link}\``, { parse_mode: 'Markdown' });
     }
 
-    // منوی ادمین
     if (data === 'list_files') {
         bot.answerCallbackQuery(query.id);
         try {
             const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME, MaxKeys: 15 }).promise();
             const files = s3Data.Contents || [];
-            if (files.length === 0) return bot.sendMessage(chatId, '📂 خالی است.');
+            if (files.length === 0) return safeSend('📂 خالی است.');
             let msg = `📁 **۱۵ فایل اخیر:**\n\n`;
             let keyboard = [];
             let tempRow = [];
@@ -466,7 +487,7 @@ bot.on('callback_query', async (query) => {
                 tempRow.push({ text: `${idx + 1}`, callback_data: `select_${idx}` });
                 if (tempRow.length === 5 || idx === files.length - 1) { keyboard.push(tempRow); tempRow = []; }
             });
-            bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
+            safeSend(msg, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
         } catch (err) {}
     }
 
@@ -479,7 +500,7 @@ bot.on('callback_query', async (query) => {
             let totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
             let totalGB = (totalBytes / (1024 * 1024 * 1024)).toFixed(3);
             let estCost = Math.round(parseFloat(totalGB) * 200);
-            bot.sendMessage(chatId, `📊 **حجم صندوقچه:** ${totalGB} GB (${totalMB} MB)\n💸 هزینه تخمینی ماهانه: ${estCost} تومان`);
+            safeSend(`📊 **حجم صندوقچه:** ${totalGB} GB (${totalMB} MB)\n💸 هزینه تخمینی ماهانه: ${estCost} تومان`);
         } catch (err) {}
     }
 
@@ -487,8 +508,8 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
-        if (!fileKey) return bot.sendMessage(chatId, '❌ خطا!');
-        bot.sendMessage(chatId, `🔍 **فایل [ ${parseInt(idx) + 1} ]**\n\`${fileKey}\``, {
+        if (!fileKey) return safeSend('❌ خطا!');
+        safeSend(`🔍 **فایل [ ${parseInt(idx) + 1} ]**\n\`${fileKey}\``, {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
@@ -504,7 +525,7 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
-        if (fileKey) bot.sendMessage(chatId, `🔗 **لینک مستقیم:**\n\n\`${BASE_URL}/${fileKey}\``, { parse_mode: 'Markdown' });
+        if (fileKey) safeSend(`🔗 **لینک مستقیم:**\n\n\`${BASE_URL}/${fileKey}\``, { parse_mode: 'Markdown' });
     }
 
     if (data.startsWith('confirmdelete_')) {
@@ -514,7 +535,7 @@ bot.on('callback_query', async (query) => {
         try {
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileKey }).promise();
             delete memory['scanned_projects'];
-            bot.sendMessage(chatId, `🗑 حذف شد:\n\`${fileKey}\``, { parse_mode: 'Markdown' });
+            safeSend(`🗑 حذف شد:\n\`${fileKey}\``, { parse_mode: 'Markdown' });
         } catch (err) {}
     }
 
@@ -525,7 +546,9 @@ bot.on('callback_query', async (query) => {
         try {
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileInfo.safeFileName }).promise();
             delete memory['scanned_projects'];
-            bot.editMessageText(`🗑 **فایل با موفقیت حذف شد!**`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+            if (!isInline && messageId) {
+                bot.editMessageText(`🗑 **فایل با موفقیت حذف شد!**`, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' }).catch(()=>{});
+            }
         } catch (err) {}
     }
 });
