@@ -2,8 +2,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const AWS = require('aws-sdk');
 const axios = require('axios');
 const http = require('http'); 
-const firebase = require('firebase/app');
-require('firebase/firestore');
 
 // سرور الکی برای بیدار نگه داشتن رندر
 const server = http.createServer((req, res) => {
@@ -26,29 +24,41 @@ const s3 = new AWS.S3({
 
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
+const DB_FILE_KEY = 'database.json'; // نام فایل دیتابیس در صندوقچه شما
 
-// تنظیمات کانال اسپانسر (قفل اجباری)
 const sponsorChannel = '@godofanimeblack';
-
-const firebaseConfig = {
-    apiKey: "AIzaSyAeD2Pc5q_LgDeWDEC7JCQeDEAzFlZRhiQ",
-    authDomain: "anime-black-cefc0.firebaseapp.com",
-    projectId: "anime-black-cefc0",
-    storageBucket: "anime-black-cefc0.firebasestorage.app",
-    messagingSenderId: "721270287867",
-    appId: "1:721270287867:web:87329ad1e081c8ca6fef5e"
-};
-
-if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
-const cloudDb = firebase.firestore();
-cloudDb.settings({ experimentalForceLongPolling: true });
-
 const memory = {};
 const adminState = {}; 
 
+// تابع ساخت نمودار لودینگ جدید
 function getProgressBar(percent) {
     let filled = Math.round(percent / 10);
     return '■'.repeat(filled) + '□'.repeat(10 - filled) + ' ' + percent + '%';
+}
+
+// تابع خواندن دیتابیس مستقیم از آروان‌کلود
+async function getDatabase() {
+    try {
+        const data = await s3.getObject({ Bucket: BUCKET_NAME, Key: DB_FILE_KEY }).promise();
+        return JSON.parse(data.Body.toString());
+    } catch (err) {
+        // اگر فایل دیتابیس هنوز ساخته نشده، یک ساختار خام اولیه برمی‌گرداند
+        if (err.code === 'NoSuchKey') {
+            return { id: 'main', team: [], channelPosts: {} };
+        }
+        throw err;
+    }
+}
+
+// تابع ذخیره دیتابیس مستقیم در آروان‌کلود به صورت عمومی
+async function saveDatabase(siteData) {
+    await s3.putObject({
+        Bucket: BUCKET_NAME,
+        Key: DB_FILE_KEY,
+        Body: JSON.stringify(siteData, null, 2),
+        ContentType: 'application/json',
+        ACL: 'public-read' // برای اینکه بعداً سایت هم بتواند مستقیم آن را بخواند
+    }).promise();
 }
 
 function parsePostTemplate(text) {
@@ -63,16 +73,16 @@ function parsePostTemplate(text) {
         for (let kw of keywords) {
             const regex = new RegExp(`${kw}\\s*:\\s*(.*)`, 'i');
             const match = normalized.match(regex);
-            if (match) return match[1].trim();
+            if (match && match[1]) return match[1].trim();
         }
-        return 'نامشخص';
+        return ''; 
     };
 
     return {
-        titleEn: extract(['عنوان انگلیسی', 'عنوان انگلیسے', 'titleEn', 'title_en']),
+        titleEn: extract(['عنوان انگلیسی', 'عنوان انگلیسے', 'titleEn', 'title_en']) || 'Anime-' + Date.now(),
         alias: extract(['معروف به', 'alias', 'known as']),
         titleZh: extract(['عنوان چینی', 'عنوان چینے', 'titleZh', 'title_zh']),
-        titleFa: extract(['عنوان فارسی', 'عنوان فارسے', 'titleFa', 'title_fa']),
+        titleFa: extract(['عنوان فارسی', 'عنوان فارسے', 'titleFa', 'title_fa']) || 'انیمه جدید',
         status: extract(['وضعیت', 'status']),
         aired: extract(['پخش شده', 'aired', 'year']),
         eps: extract(['تعداد قسمت', 'episodes', 'eps']),
@@ -81,7 +91,9 @@ function parsePostTemplate(text) {
         rating: extract(['امتیاز', 'rating']),
         lang: extract(['زبان', 'language', 'lang']),
         platform: extract(['پلتفرم پخش', 'platform']),
-        genres: extract(['ژانرها🎭', 'ژانرها', 'ژانر', 'genres'])
+        genres: extract(['ژانرها🎭', 'ژانرها', 'ژانر', 'genres']),
+        files: {}, 
+        subs: {}   
     };
 }
 
@@ -92,6 +104,9 @@ async function scanS3Projects() {
     const projects = {};
     const regex = /^(.+?)-S(\d+)EP(\d+)(?:-(.+?))?\.(mkv|mp4|zip|rar|srt)$/i;
     files.forEach(file => {
+        // فایل دیتابیس را در اسکن پروژه‌ها نادیده می‌گیریم
+        if (file.Key === DB_FILE_KEY) return;
+
         const match = file.Key.match(regex);
         if (match) {
             let animeNameRaw = match[1];
@@ -108,20 +123,17 @@ async function scanS3Projects() {
     return projects;
 }
 
-// تابع بررسی عضویت اجباری در کانال تلگرام
 async function checkForceJoin(userId) {
     try {
         const member = await bot.getChatMember(sponsorChannel, userId);
         const status = member.status;
         return ['creator', 'administrator', 'member'].includes(status);
     } catch (err) {
-        // در صورت ادمین نبودن ربات در کانال، برای جلوگیری از خرابی سیستم تایید میکنیم
-        console.error('خطای تایید کانال (احتمالا ربات در کانال ادمین نیست):', err);
+        console.error('خطای تایید کانال:', err);
         return true; 
     }
 }
 
-// تابع فرستادن پیام قفل کانال
 function sendLockMessage(chatId) {
     const lockMsg = `❌ **رئیس عزیز، برای استفاده از ربات باید حتماً عضو کانال ما باشی!**\n\nلطفاً ابتدا روی لینک زیر کلیک کن، عضو شو و سپس دکمه **✅ تایید عضویت** را بزن: 👇`;
     bot.sendMessage(chatId, lockMsg, {
@@ -135,7 +147,6 @@ function sendLockMessage(chatId) {
     });
 }
 
-// تابع فرستادن منوی اصلی شروع
 function sendStartMenu(chatId) {
     bot.sendMessage(chatId, 'سلام به هاب انیمه‌بلک خوش آمدید! 🍷\nلطفاً از دکمه‌های زیر جهت کار با ربات استفاده کنید:', {
         reply_markup: {
@@ -150,7 +161,7 @@ function sendStartMenu(chatId) {
     });
 }
 
-console.log('🤖 جارویس (نسخه رفع باگ و قفل کانال) روشن شد...');
+console.log('🤖 جارویس (نسخه ۱۰۰٪ صندوقچه‌ای) روشن شد...');
 
 // اینلاین کوئری (جستجوی شناور روی کیبورد)
 bot.on('inline_query', async (query) => {
@@ -158,7 +169,6 @@ bot.on('inline_query', async (query) => {
     const userId = query.from.id;
     const queryStr = query.query.toLowerCase().trim();
 
-    // بررسی عضویت در کانال برای اینلاین
     const isJoined = await checkForceJoin(userId);
     if (!isJoined) {
         return bot.answerInlineQuery(queryId, [], {
@@ -169,8 +179,7 @@ bot.on('inline_query', async (query) => {
     }
 
     try {
-        const doc = await cloudDb.collection("database").doc("main").get();
-        const siteData = doc.data();
+        const siteData = await getDatabase();
         let results = [];
 
         if (siteData && siteData.channelPosts) {
@@ -219,23 +228,16 @@ bot.on('message', async (msg) => {
     const userId = msg.from.id;
     const text = msg.text;
 
-    // 🔴 اولویت اول: ریستارت اضطراری با دستور /start در هر مرحله‌ای
     if (text === '/start') {
-        delete adminState[chatId]; // پاکسازی تمام بن‌بست‌های حافظه
-        
-        // بررسی قفل کانال
+        delete adminState[chatId]; 
         const isJoined = await checkForceJoin(userId);
-        if (!isJoined) {
-            return sendLockMessage(chatId);
-        }
-        
+        if (!isJoined) return sendLockMessage(chatId);
         return sendStartMenu(chatId);
     }
 
-    // منوی ادمین اختصاصی برای آپلود کردن (بدون رمز عبور ادمین)
     if (text === '/admin') {
         delete adminState[chatId];
-        return bot.sendMessage(chatId, '👑 **منوی مدیریت پروژه انیمه‌بلک فعال شد رئیس!**\nجهت آپلود، فایل دو خطی بفرست یا از دکمه‌های زیر استفاده کن:', {
+        return bot.sendMessage(chatId, '👑 **منوی مدیریت پروژه انیمه‌بلک فعال شد رئیس!**', {
             reply_markup: {
                 inline_keyboard: [
                     [{ text: '📝 ایجاد پست جدید انیمه', callback_data: 'admin_create_post' }],
@@ -248,16 +250,14 @@ bot.on('message', async (msg) => {
         });
     }
 
-    // ایجاد پست جدید: دریافت عکس
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_post_img') {
         adminState[chatId].img = text.trim();
         adminState[chatId].state = 'waiting_for_post_text';
-        return bot.sendMessage(chatId, '📝 عالیه! حالا قالب متنی پست را بفرست تا برات تجزیه‌اش کنم:');
+        return bot.sendMessage(chatId, '📝 عالیه! حالا قالب متنی پست را بفرستید:');
     }
 
-    // ایجاد پست جدید: دریافت متن و ساخت اسلاگ امن
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_post_text') {
-        bot.sendMessage(chatId, '⚙️ در حال تحلیل قالب متنی و ثبت در دیتابیس ابری...');
+        bot.sendMessage(chatId, '⚙️ در حال تحلیل قالب متنی و ثبت در صندوقچه آروان‌کلود...');
         try {
             const parsedData = parsePostTemplate(text);
             parsedData.img = adminState[chatId].img;
@@ -267,38 +267,41 @@ bot.on('message', async (msg) => {
                 slug = 'project-' + Date.now();
             }
 
-            const docRef = cloudDb.collection("database").doc("main");
-            const doc = await docRef.get();
-            let siteData = doc.data() || { id: 'main', team: [], channelPosts: {} };
-            
+            const siteData = await getDatabase();
             if (!siteData.channelPosts) siteData.channelPosts = {};
-            siteData.channelPosts[slug] = parsedData;
+            
+            if (siteData.channelPosts[slug]) {
+                parsedData.files = siteData.channelPosts[slug].files || {};
+                parsedData.subs = siteData.channelPosts[slug].subs || {};
+            }
 
-            await docRef.set(siteData);
-            delete adminState[chatId]; // پاک کردن موفق وضعیت
+            siteData.channelPosts[slug] = parsedData;
+            await saveDatabase(siteData);
+            
+            delete adminState[chatId]; 
             bot.sendMessage(chatId, `✅ **پست با موفقیت ثبت شد!**\n\n🎬 نام انگلیسی: ${parsedData.titleEn}\n🎥 نام فارسی: ${parsedData.titleFa}`);
         } catch (err) {
-            delete adminState[chatId]; // ریستارت در صورت بروز خطا برای خارج شدن از بن‌بست
-            bot.sendMessage(chatId, `❌ **خطا در ثبت پست! حافظه ربات ریستارت شد.**\n\nعلت خطا:\n\`${err.message}\``, { parse_mode: 'Markdown' });
+            delete adminState[chatId]; 
+            bot.sendMessage(chatId, `❌ **خطا در ثبت پست! وضعیت ربات ریستارت شد.**\n\nعلت خطا:\n\`${err.message}\``, { parse_mode: 'Markdown' });
         }
         return;
     }
 
-    // جستجوی دستی کاربر
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_search_query') {
         const queryStr = text.trim().toLowerCase().replace(/[^a-z0-9آ-ی]/g, '');
         bot.sendMessage(chatId, '🔍 در حال جستجو...');
 
         try {
-            const doc = await cloudDb.collection("database").doc("main").get();
-            const siteData = doc.data();
+            const siteData = await getDatabase();
             let foundPost = null;
+            let foundSlug = "";
 
             if (siteData && siteData.channelPosts) {
                 for (let slug in siteData.channelPosts) {
                     let p = siteData.channelPosts[slug];
-                    if (p.titleEn.toLowerCase().includes(queryStr) || p.titleFa.toLowerCase().includes(queryStr) || p.alias.toLowerCase().includes(queryStr)) {
+                    if (p.titleEn.toLowerCase().includes(queryStr) || p.titleFa.toLowerCase().includes(queryStr) || (p.alias && p.alias.toLowerCase().includes(queryStr))) {
                         foundPost = p;
+                        foundSlug = slug;
                         break;
                     }
                 }
@@ -307,7 +310,7 @@ bot.on('message', async (msg) => {
 
             if (foundPost) {
                 let searchSlug = foundPost.titleEn.replace(/\s+/g, '-');
-                let postMsg = `🎥\n\nعنوان هاے دیگر 𒅒\n\n❀عنوان انگلیسے : ${foundPost.titleEn}\n❀معروف به : ${foundPost.alias}\n❀عنوان چینے : ${foundPost.titleZh}\n❀عنوان فارسے : ${foundPost.titleFa}\n\n✿وضعیت : ${foundPost.status}\n✿پخش شده : ${foundPost.aired}\n✿تعداد قسمت : ${foundPost.eps}\n✿مدت زمان : ${foundPost.duration}\n✿رده سنے : ${foundPost.age}\n✿امتیاز : ${foundPost.rating}\n✿زبان : ${foundPost.lang}\n✿پلتفرم پخش : ${foundPost.platform}\n✿ژانرها🎭 : ${foundPost.genres}\n\n❖فصل ها: [1درحال‌پخش]\n\n⌬ Synopsis\n➼ @godofanimeblack`;
+                let postMsg = `🎥\n\nعنوان هاے دیگر 𒅒\n\n❀عنوان انگلیسے : ${foundPost.titleEn}\n❀معروف به : ${foundPost.alias || 'نامشخص'}\n❀عنوان چینے : ${foundPost.titleZh}\n❀عنوان فارسے : ${foundPost.titleFa}\n\n✿وضعیت : ${foundPost.status}\n✿پخش شده : ${foundPost.aired}\n✿تعداد قسمت : ${foundPost.eps}\n✿مدت زمان : ${foundPost.duration}\n✿رده سنے : ${foundPost.age}\n✿امتیاز : ${foundPost.rating}\n✿زبان : ${foundPost.lang}\n✿پلتفرم پخش : ${foundPost.platform}\n✿ژانرها🎭 : ${foundPost.genres}\n\n❖فصل ها: [1درحال‌پخش]\n\n⌬ Synopsis\n➼ @godofanimeblack`;
 
                 bot.sendMessage(chatId, `[‌](${foundPost.img})` + postMsg, {
                     parse_mode: 'Markdown',
@@ -321,7 +324,7 @@ bot.on('message', async (msg) => {
                     }
                 });
             } else {
-                bot.sendMessage(chatId, '❌ متاسفانه انیمه‌ای با این مشخصات پیدا نکردم رئیس!');
+                bot.sendMessage(chatId, '❌ پیدا نکردم رئیس!');
             }
         } catch (err) {
             delete adminState[chatId];
@@ -330,7 +333,6 @@ bot.on('message', async (msg) => {
         return;
     }
 
-    // فرآیند آپلود فایل ادمین
     if (text) {
         const lines = text.split('\n');
         if (lines.length < 2) return;
@@ -351,7 +353,6 @@ bot.on('message', async (msg) => {
             try {
                 const head = await axios.head(downloadUrl);
                 const totalSize = parseInt(head.headers['content-length'] || 0);
-
                 const response = await axios({ method: 'get', url: downloadUrl, responseType: 'stream' });
 
                 const safeFileName = fileNameText.replace(/\s+/g, '-').replace(/\[/g, '-').replace(/\]/g, '').replace(/[^a-zA-Z0-9.\-_]/g, '');
@@ -374,6 +375,10 @@ bot.on('message', async (msg) => {
 
                 await uploadRequest.promise();
                 const finalLink = `${BASE_URL}/${safeFileName}`;
+                let isSub = ['zip', 'rar', 'srt'].includes(ext);
+
+                const fileId = Date.now().toString();
+                memory[fileId] = { safeFileName, animeName, season, episode, quality: match[4] || '1080', isSub, finalLink };
 
                 let successMsg = `✅ **مکش فایل با موفقیت ۱۰۰٪ کامل شد رئیس!**\n\n`;
                 successMsg += `🎬 **انیمه:** ${animeName}\n`;
@@ -381,8 +386,17 @@ bot.on('message', async (msg) => {
                 successMsg += `🏷 **نام فایل تمیز شده:**\n\`${safeFileName}\`\n\n`;
                 successMsg += `🔗 **لینک شما:** ${finalLink}`;
 
-                delete memory['scanned_projects'];
-                bot.sendMessage(chatId, successMsg, { parse_mode: 'Markdown' });
+                bot.sendMessage(chatId, successMsg, { 
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [
+                            [
+                                { text: '🌐 انتشار خودکار در کانال', callback_data: `addsite_${fileId}` },
+                                { text: '🗑 حذف از سرور', callback_data: `delete_${fileId}` }
+                            ]
+                        ]
+                    }
+                });
             } catch (error) {
                 bot.sendMessage(chatId, '❌ خطا در آپلود فایل!');
             }
@@ -393,20 +407,19 @@ bot.on('message', async (msg) => {
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const userId = query.from.id;
+    const messageId = query.message.message_id;
     const data = query.data;
 
-    // تایید عضویت دستی کاربر
     if (data === 'check_join') {
         const isJoined = await checkForceJoin(userId);
         if (isJoined) {
-            bot.answerCallbackQuery(query.id, { text: '🎉 عضویت شما تایید شد رئیس! خوش آمدید.' });
+            bot.answerCallbackQuery(query.id, { text: '🎉 تایید شد رئیس! خوش آمدید.' });
             return sendStartMenu(chatId);
         } else {
             return bot.answerCallbackQuery(query.id, { text: '❌ رئیس، هنوز عضو کانال نشدی!', show_alert: true });
         }
     }
 
-    // دکمه‌های جستجو و کارهای پیشنهادی نیاز به عضویت دارند
     if (data === 'search_start' || data === 'suggested_posts') {
         const isJoined = await checkForceJoin(userId);
         if (!isJoined) {
@@ -418,21 +431,20 @@ bot.on('callback_query', async (query) => {
     if (data === 'search_start') {
         adminState[chatId] = { state: 'waiting_for_search_query' };
         bot.answerCallbackQuery(query.id);
-        return bot.sendMessage(chatId, '🔍 **لطفاً نام انیمه مورد نظر خود را (فارسی یا انگلیسی) بنویسید:**');
+        return bot.sendMessage(chatId, '🔍 **لطفاً نام انیمه مورد نظر خود را بنویسید:**');
     }
 
     if (data === 'admin_create_post') {
         adminState[chatId] = { state: 'waiting_for_post_img' };
         bot.answerCallbackQuery(query.id);
-        return bot.sendMessage(chatId, '📸 **رئیس، لطفاً لینک مستقیم عکس کاور این انیمه را برام بفرستید:**');
+        return bot.sendMessage(chatId, '📸 **رئیس، لطفاً لینک مستقیم عکس کاور این انیمه را بفرستید:**');
     }
 
-    // کارهای پیشنهادی (پست‌های فایربیس)
+    // کارهای پیشنهادی (پست‌های دیتابیس صندوقچه‌ای)
     if (data === 'suggested_posts') {
         bot.answerCallbackQuery(query.id, { text: '⏳ دریافت لیست انیمه‌ها...' });
         try {
-            const doc = await cloudDb.collection("database").doc("main").get();
-            const siteData = doc.data();
+            const siteData = await getDatabase();
             if (!siteData || !siteData.channelPosts || Object.keys(siteData.channelPosts).length === 0) {
                 return bot.sendMessage(chatId, '❌ هیچ پستی ثبت نشده است!');
             }
@@ -452,12 +464,11 @@ bot.on('callback_query', async (query) => {
         const slug = data.split('_')[1];
         bot.answerCallbackQuery(query.id);
         try {
-            const doc = await cloudDb.collection("database").doc("main").get();
-            const siteData = doc.data();
+            const siteData = await getDatabase();
             const p = siteData.channelPosts ? siteData.channelPosts[slug] : null;
             if (p) {
                 let searchSlug = p.titleEn.replace(/\s+/g, '-');
-                let postMsg = `🎥\n\nعنوان هاے دیگر 𒅒\n\n❀عنوان انگلیسے : ${p.titleEn}\n❀معروف به : ${p.alias}\n❀عنوان چینے : ${p.titleZh}\n❀عنوان فارسے : ${p.titleFa}\n\n✿وضعیت : ${p.status}\n✿پخش شده : ${p.aired}\n✿تعداد قسمت : ${p.eps}\n✿مدت زمان : ${p.duration}\n✿رده سنے : ${p.age}\n✿امتیاز : ${p.rating}\n✿زبان : ${p.lang}\n✿پلتفرم پخش : ${p.platform}\n✿ژانرها🎭 : ${p.genres}\n\n❖فصل ها: [1درحال‌پخش]\n\n⌬ Synopsis\n➼ @godofanimeblack`;
+                let postMsg = `🎥\n\nعنوان هاے دیگر 𒅒\n\n❀عنوان انگلیسے : ${p.titleEn}\n❀معروف به : ${p.alias || 'نامشخص'}\n❀عنوان چینے : ${p.titleZh}\n❀عنوان فارسے : ${p.titleFa}\n\n✿وضعیت : ${p.status}\n✿پخش شده : ${p.aired}\n✿تعداد قسمت : ${p.eps}\n✿مدت زمان : ${p.duration}\n✿رده سنے : ${p.age}\n✿امتیاز : ${p.rating}\n✿زبان : ${p.lang}\n✿پلتفرم پخش : ${p.platform}\n✿ژانرها🎭 : ${p.genres}\n\n❖فصل ها: [1درحال‌پخش]\n\n⌬ Synopsis\n➼ @godofanimeblack`;
                 bot.sendMessage(chatId, `[‌](${p.img})` + postMsg, {
                     parse_mode: 'Markdown',
                     reply_markup: {
@@ -473,31 +484,57 @@ bot.on('callback_query', async (query) => {
         } catch (err) {}
     }
 
-    // نمایش زیرنویس‌ها
+    // دانلود زیرنویس
     if (data.startsWith('psubs_')) {
-        bot.answerCallbackQuery(query.id, { text: '⏳ اسکن زیرنویس‌ها...' });
+        bot.answerCallbackQuery(query.id);
         const slug = data.split('_')[1];
-        const projects = await scanS3Projects();
-        const p = projects[slug];
-        if (!p || p.subs.length === 0) return bot.sendMessage(chatId, '📝 هیچ زیرنویسی برای این کار یافت نشد!');
+        try {
+            const siteData = await getDatabase();
+            const p = siteData.channelPosts ? siteData.channelPosts[slug] : null;
 
-        let subMsg = `📝 **زیرنویس‌های انیمه ${p.name}:**\n\n`;
-        p.subs.forEach(s => { subMsg += `🔹 **فصل ${s.season} قسمت ${s.ep}**:\n\`${s.link}\`\n\n`; });
-        bot.sendMessage(chatId, subMsg, { parse_mode: 'Markdown' });
+            if (!p || !p.subs || Object.keys(p.subs).length === 0) {
+                return bot.sendMessage(chatId, '📝 هیچ زیرنویسی برای این کار یافت نشد!');
+            }
+
+            let subMsg = `📝 **زیرنویس‌های انیمه ${p.titleFa || p.titleEn}:**\n\n`;
+            const sortedEps = Object.keys(p.subs).sort((a,b) => parseInt(a) - parseInt(b));
+            sortedEps.forEach(ep => {
+                subMsg += `🔹 **قسمت ${ep}**:\n\`${p.subs[ep]}\`\n\n`;
+            });
+            bot.sendMessage(chatId, subMsg, { parse_mode: 'Markdown' });
+        } catch (err) {
+            bot.sendMessage(chatId, '❌ خطا!');
+        }
     }
 
-    // نمایش کیفیت‌ها
+    // نمایش دکمه کیفیت‌ها
     if (data.startsWith('pfiles_')) {
         bot.answerCallbackQuery(query.id);
         const slug = data.split('_')[1];
-        const projects = await scanS3Projects();
-        const p = projects[slug];
-        if (!p || p.files.length === 0) return bot.sendMessage(chatId, '🎥 هیچ قسمتی یافت نشد!');
+        try {
+            const siteData = await getDatabase();
+            const p = siteData.channelPosts ? siteData.channelPosts[slug] : null;
 
-        const qualities = [...new Set(p.files.map(f => f.quality))];
-        let keyboard = [];
-        qualities.forEach(q => { keyboard.push([{ text: `🎥 کیفیت ${q}p`, callback_data: `pq_files_${slug}_${q}` }]); });
-        bot.sendMessage(chatId, `🎞 **کیفیت مورد نظر خود را انتخاب کنید:**`, { reply_markup: { inline_keyboard: keyboard } });
+            if (!p || !p.files || Object.keys(p.files).length === 0) {
+                return bot.sendMessage(chatId, '🎥 هیچ قسمتی یافت نشد!');
+            }
+
+            let qualities = [];
+            for (let ep in p.files) {
+                for (let q in p.files[ep]) {
+                    qualities.push(q);
+                }
+            }
+            qualities = [...new Set(qualities)].sort((a,b) => parseInt(b) - parseInt(a));
+
+            let keyboard = [];
+            qualities.forEach(q => {
+                keyboard.push([{ text: `🎥 کیفیت ${q}p`, callback_data: `pq_files_${slug}_${q}` }]);
+            });
+            bot.sendMessage(chatId, `🎞 **کیفیت مورد نظر خود را انتخاب کنید:**`, { reply_markup: { inline_keyboard: keyboard } });
+        } catch (err) {
+            bot.sendMessage(chatId, '❌ خطا!');
+        }
     }
 
     // لیست اپیزودها
@@ -506,21 +543,26 @@ bot.on('callback_query', async (query) => {
         const parts = data.split('_');
         const slug = parts[2];
         const q = parts[3];
-        const projects = await scanS3Projects();
-        const p = projects[slug];
 
-        const allEpisodes = [...new Set(p.files.map(f => f.ep))].sort((a,b) => parseInt(a) - parseInt(b));
-        let keyboard = [];
-        let tempRow = [];
+        try {
+            const siteData = await getDatabase();
+            const p = siteData.channelPosts ? siteData.channelPosts[slug] : null;
 
-        allEpisodes.forEach(epNum => {
-            tempRow.push({ text: `قسمت ${epNum}`, callback_data: `epdl_${slug}_${epNum}_${q}` });
-            if (tempRow.length === 4 || epNum === allEpisodes[allEpisodes.length - 1]) {
-                keyboard.push(tempRow);
-                tempRow = [];
-            }
-        });
-        bot.sendMessage(chatId, `🎞 **لیست قسمت‌های انیمه ${p.name} (کیفیت ${q}p):**`, { reply_markup: { inline_keyboard: keyboard } });
+            const allEpisodes = Object.keys(p.files).sort((a,b) => parseInt(a) - parseInt(b));
+            let keyboard = [];
+            let tempRow = [];
+
+            allEpisodes.forEach(epNum => {
+                tempRow.push({ text: `قسمت ${epNum}`, callback_data: `epdl_${slug}_${epNum}_${q}` });
+                if (tempRow.length === 4 || epNum === allEpisodes[allEpisodes.length - 1]) {
+                    keyboard.push(tempRow);
+                    tempRow = [];
+                }
+            });
+            bot.sendMessage(chatId, `🎞 **لیست قسمت‌های انیمه ${p.titleFa || p.titleEn} (کیفیت ${q}p):**`, { reply_markup: { inline_keyboard: keyboard } });
+        } catch (err) {
+            bot.sendMessage(chatId, '❌ خطا!');
+        }
     }
 
     // دانلود قسمت و جایگزینی هوشمند کیفیت
@@ -531,22 +573,26 @@ bot.on('callback_query', async (query) => {
         const epNum = parts[2];
         const qRequested = parts[3];
 
-        const projects = await scanS3Projects();
-        const p = projects[slug];
-        const fileExact = p.files.find(f => f.ep === epNum && f.quality === qRequested);
+        try {
+            const siteData = await getDatabase();
+            const p = siteData.channelPosts ? siteData.channelPosts[slug] : null;
+            const fileExact = p.files[epNum] ? p.files[epNum][qRequested] : null;
 
-        if (fileExact) {
-            bot.sendMessage(chatId, `🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت ${qRequested}p):**\n\n\`${fileExact.link}\``, { parse_mode: 'Markdown' });
-        } else {
-            const availableQualities = p.files.filter(f => f.ep === epNum).map(f => f.quality);
-            if (availableQualities.length > 0) {
-                const altQ = availableQualities[0];
-                bot.sendMessage(chatId, `⚠️ **کیفیت ${qRequested}p برای قسمت ${epNum} موجود نیست!**\nاما کیفیت **${altQ}p** موجود است. مایلید این کیفیت را دانلود کنید؟`, {
-                    reply_markup: { inline_keyboard: [[ { text: `✅ بله، دانلود کیفیت ${altQ}p`, callback_data: `force_dl_${slug}_${epNum}_${altQ}` } ]] }
-                });
+            if (fileExact) {
+                bot.sendMessage(chatId, `🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت ${qRequested}p):**\n\n\`${fileExact}\``, { parse_mode: 'Markdown' });
             } else {
-                bot.sendMessage(chatId, '❌ متاسفانه هیچ کیفیتی برای این قسمت آپلود نشده است!');
+                const availableQualities = p.files[epNum] ? Object.keys(p.files[epNum]) : [];
+                if (availableQualities.length > 0) {
+                    const altQ = availableQualities[0];
+                    bot.sendMessage(chatId, `⚠️ **کیفیت ${qRequested}p برای قسمت ${epNum} موجود نیست!**\nاما کیفیت **${altQ}p** موجود است. مایلید این کیفیت را دانلود کنید؟`, {
+                        reply_markup: { inline_keyboard: [[ { text: `✅ بله، دانلود کیفیت ${altQ}p`, callback_data: `force_dl_${slug}_${epNum}_${altQ}` } ]] }
+                    });
+                } else {
+                    bot.sendMessage(chatId, '❌ متاسفانه هیچ کیفیتی برای این قسمت آپلود نشده است!');
+                }
             }
+        } catch (err) {
+            bot.sendMessage(chatId, '❌ خطا!');
         }
     }
 
@@ -556,10 +602,54 @@ bot.on('callback_query', async (query) => {
         const slug = parts[2];
         const epNum = parts[3];
         const qAlt = parts[4];
-        const projects = await scanS3Projects();
-        const p = projects[slug];
-        const fileExact = p.files.find(f => f.ep === epNum && f.quality === qAlt);
-        if (fileExact) bot.sendMessage(chatId, `🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت جایگزین ${qAlt}p):**\n\n\`${fileExact.link}\``, { parse_mode: 'Markdown' });
+        try {
+            const siteData = await getDatabase();
+            const p = siteData.channelPosts ? siteData.channelPosts[slug] : null;
+            const fileExact = p.files[epNum] ? p.files[epNum][qAlt] : null;
+            if (fileExact) bot.sendMessage(chatId, `🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت جایگزین ${qAlt}p):**\n\n\`${fileExact}\``, { parse_mode: 'Markdown' });
+        } catch (err) {}
+    }
+
+    // انتشار خودکار در دیتابیس صندوقچه‌ای (ذخیره مستقیم در فایل database.json)
+    if (data.startsWith('addsite_')) {
+        const fileId = data.split('_')[1];
+        const fileInfo = memory[fileId];
+        if (!fileInfo) return bot.answerCallbackQuery(query.id, { text: 'خطا! اطلاعات از حافظه موقت پاک شده.', show_alert: true });
+
+        bot.answerCallbackQuery(query.id, { text: '⏳ در حال ثبت مستقیم در دیتابیس صندوقچه...' });
+
+        try {
+            const siteData = await getDatabase();
+            const slug = fileInfo.animeName.toLowerCase().replace(/[^a-z0-9]/g, '-');
+            const p = siteData.channelPosts ? siteData.channelPosts[slug] : null;
+
+            if (p) {
+                let s = fileInfo.season;
+                let ep = fileInfo.episode;
+
+                if (fileInfo.isSub) {
+                    if (!p.subs) p.subs = {};
+                    p.subs[ep] = fileInfo.finalLink;
+                } else {
+                    if (!p.files) p.files = {};
+                    if (!p.files[ep]) p.files[ep] = {};
+                    
+                    let qKey = fileInfo.quality.replace('p', '');
+                    p.files[ep][qKey] = fileInfo.finalLink;
+                }
+
+                await saveDatabase(siteData);
+                bot.editMessageText(`✅ **لینک با موفقیت در دیتابیسِ پستِ "${p.titleFa}" منتشر شد!** 🌐\nفصل: ${s} | قسمت: ${ep}`, {
+                    chat_id: chatId,
+                    message_id: messageId
+                });
+            } else {
+                bot.sendMessage(chatId, `❌ رئیس، پستِ مربوط به "${fileInfo.animeName}" پیدا نشد! لطفاً ابتدا دکمه ایجاد پست را در ادمین بزنید و برایش پست بسازید.`);
+            }
+        } catch (err) {
+            console.error(err);
+            bot.sendMessage(chatId, '❌ خطا در ثبت نهایی دیتابیس!');
+        }
     }
 
     // سایر دکمه‌های ادمین (لیست چشمی فایل‌ها و وضعیت صندوقچه)
@@ -573,6 +663,7 @@ bot.on('callback_query', async (query) => {
             let keyboard = [];
             let tempRow = [];
             files.forEach((file, idx) => {
+                if (file.Key === DB_FILE_KEY) return; // نادیده گرفتن فایل دیتابیس در مدیریت فایل چشمی ادمین
                 msg += `**[ ${idx + 1} ]** \`${file.Key}\`\n`;
                 memory[`fkey_${idx}`] = file.Key;
                 tempRow.push({ text: `${idx + 1}`, callback_data: `select_${idx}` });
@@ -613,7 +704,6 @@ bot.on('callback_query', async (query) => {
         const fileKey = memory[`fkey_${idx}`];
         try {
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileKey }).promise();
-            delete memory['scanned_projects'];
             bot.sendMessage(chatId, `🗑 حذف شد:\n\`${fileKey}\``, { parse_mode: 'Markdown' });
         } catch (err) {}
     }
