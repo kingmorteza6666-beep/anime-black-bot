@@ -241,9 +241,9 @@ bot.on('message', async (msg) => {
 
                 const safeFileName = fileNameText.replace(/\s+/g, '-').replace(/\[/g, '-').replace(/\]/g, '').replace(/[^a-zA-Z0-9.\-_]/g, '');
                 
-                // بهینه‌سازی آپلود برای جلوگیری از کرش شدن سرور در فایل‌های حجیم
-                const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
-                const uploadOptions = { partSize: 10 * 1024 * 1024, queueSize: 1 }; // تکه‌های ۱۰ مگابایتی
+                // سیستم توربو شارژ: ۴ کارگر همزمان با تکه‌های ۵ مگابایتی (سرعت فضایی و رم سبک)
+const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
+const uploadOptions = { partSize: 5 * 1024 * 1024, queueSize: 4 };
                 
                 const uploadRequest = s3.upload(params, uploadOptions);
                 let lastUpdate = 0;
