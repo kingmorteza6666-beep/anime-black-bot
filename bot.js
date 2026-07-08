@@ -3,15 +3,16 @@ const AWS = require('aws-sdk');
 const axios = require('axios');
 const http = require('http'); 
 
-// سرور الکی برای بیدار نگه داشتن رندر
+// برطرف کردن خطاهای کنسول پکیج تلگرام
+process.env.NTBA_FIX_319 = 1;
+
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end('رئیس، ربات جارویس بیدار است!');
+    res.end('جارویس بیدار است!');
 });
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🌐 پورت ${PORT} باز شد!`));
 
-// تنظیمات ربات و آروان‌کلود
 const token = '8972261860:AAEA-0ajtUyUaFPmWWt2Kuzu7w8Rcpyy2YE';
 const bot = new TelegramBot(token, { polling: true });
 
@@ -24,38 +25,35 @@ const s3 = new AWS.S3({
 
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
-
 const sponsorChannel = '@godofanimeblack';
 
-// حافظه‌های ربات
 const memory = {};
 const adminState = {}; 
+
+// سپرهای ضد پیام تکراری (جلوگیری از ارسال چندباره توسط تلگرام)
+const processedMessages = new Set();
+const processedQueries = new Set();
 
 function getProgressBar(percent) {
     let filled = Math.round(percent / 10);
     return '■'.repeat(filled) + '□'.repeat(10 - filled) + ' ' + percent + '%';
 }
 
-// اسکنر هوشمند آروان‌کلود (تبدیل فایل‌ها به دیتابیسِ زنده)
 async function scanS3Projects() {
     if (memory['scanned_projects']) return memory['scanned_projects'];
     
     const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME }).promise();
     const files = s3Data.Contents || [];
     const projects = {};
-    
-    // الگوخوانی از اسم فایل (مثلاً: Name-S1EP2-1080.mkv)
     const regex = /^(.+?)-S(\d+)EP(\d+)(?:-(.+?))?\.(mkv|mp4|zip|rar|srt)$/i;
     
     files.forEach(file => {
         const match = file.Key.match(regex);
         if (match) {
-            let animeNameRaw = match[1]; // اسم با خط تیره
-            let animeNameClean = animeNameRaw.replace(/-/g, ' '); // اسم تمیز با فاصله
+            let animeNameRaw = match[1]; 
+            let animeNameClean = animeNameRaw.replace(/-/g, ' '); 
             
-            if (!projects[animeNameRaw]) {
-                projects[animeNameRaw] = { name: animeNameClean, files: [], subs: [] };
-            }
+            if (!projects[animeNameRaw]) projects[animeNameRaw] = { name: animeNameClean, files: [], subs: [] };
             
             let ext = match[5].toLowerCase();
             if (['zip', 'rar', 'srt'].includes(ext)) {
@@ -70,7 +68,6 @@ async function scanS3Projects() {
     return projects;
 }
 
-// بررسی قفل کانال
 async function checkForceJoin(userId) {
     try {
         const member = await bot.getChatMember(sponsorChannel, userId);
@@ -99,7 +96,7 @@ function sendStartMenu(chatId) {
             inline_keyboard: [
                 [
                     { text: '🔍 جستجوی هوشمند', callback_data: 'search_start' },
-                    { text: '🗂 لیست انیمه‌ها', callback_data: 'proj_list' } 
+                    { text: '✨ کارهای پیشنهادی', callback_data: 'proj_list' } 
                 ],
                 [{ text: '📱 جستجوی سریع (روی کیبورد)', switch_inline_query: '' }]
             ]
@@ -107,13 +104,12 @@ function sendStartMenu(chatId) {
     });
 }
 
-console.log('🤖 جارویس (نسخه جستجوی ابری بدون پست) روشن شد...');
+console.log('🤖 جارویس (نسخه ضداسپم و بدون ارور) روشن شد...');
 
-// سیستم اینلاین کوئری (جستجوی شناور روی کیبورد)
 bot.on('inline_query', async (query) => {
     const queryId = query.id;
     const userId = query.from.id;
-    const queryStr = query.query.replace(/[^a-z0-9آ-ی]/gi, '').toLowerCase(); // نرمال‌سازی سرچ کاربر
+    const queryStr = query.query.replace(/[^a-z0-9آ-ی]/gi, '').toLowerCase(); 
 
     const isJoined = await checkForceJoin(userId);
     if (!isJoined) {
@@ -126,7 +122,6 @@ bot.on('inline_query', async (query) => {
 
         for (let slug in projects) {
             let p = projects[slug];
-            // سرچ هوشمند و بدون حساسیت
             let normalizedName = p.name.replace(/[^a-z0-9آ-ی]/gi, '').toLowerCase();
             
             if (!queryStr || normalizedName.includes(queryStr)) {
@@ -153,17 +148,20 @@ bot.on('inline_query', async (query) => {
             }
         }
         bot.answerInlineQuery(queryId, results.slice(0, 40), { cache_time: 0 });
-    } catch (err) {
-        console.error(err);
-    }
+    } catch (err) {}
 });
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    const messageId = msg.message_id;
     const text = msg.text;
 
-    // سپر ضد باگ (ریستارت وضعیت)
+    // سپر ضد اسپم (اگر این پیام رو قبلاً دیدیم، دیگه پردازش نمیکنیم)
+    if (processedMessages.has(messageId)) return;
+    processedMessages.add(messageId);
+    setTimeout(() => processedMessages.delete(messageId), 300000); // پاک کردن از حافظه بعد از ۵ دقیقه
+
     if (text === '/start') {
         delete adminState[chatId]; 
         const isJoined = await checkForceJoin(userId);
@@ -185,9 +183,8 @@ bot.on('message', async (msg) => {
         });
     }
 
-    // جستجوی هوشمند در چت
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_search_query') {
-        const queryStr = text.trim().replace(/[^a-z0-9آ-ی]/gi, '').toLowerCase(); // نرمال‌سازی هوشمند سرچ
+        const queryStr = text.trim().replace(/[^a-z0-9آ-ی]/gi, '').toLowerCase(); 
         bot.sendMessage(chatId, '🔍 در حال جستجو در صندوقچه ابری...');
 
         try {
@@ -203,25 +200,23 @@ bot.on('message', async (msg) => {
             delete adminState[chatId];
 
             if (foundMatches.length > 0) {
-                // اگر انیمه‌ای پیدا شد، به صورت دکمه بهش نشون میده
                 let keyboard = [];
                 foundMatches.forEach(match => {
                     keyboard.push([{ text: `🎬 ${match.data.name}`, callback_data: `pselect_${match.slug}` }]);
                 });
-                bot.sendMessage(chatId, `✨ **نتایج یافت شده برای شما:**\nلطفاً انیمه مورد نظر را انتخاب کنید:`, {
+                bot.sendMessage(chatId, `✨ **نتایج یافت شده:**\nلطفاً انیمه مورد نظر را انتخاب کنید:`, {
                     reply_markup: { inline_keyboard: keyboard }
                 });
             } else {
-                bot.sendMessage(chatId, '❌ متاسفانه انیمه‌ای با این نام در سرور یافت نشد!');
+                bot.sendMessage(chatId, '❌ انیمه‌ای با این نام یافت نشد!');
             }
         } catch (err) {
             delete adminState[chatId];
-            bot.sendMessage(chatId, '❌ خطا در سیستم جستجو!');
+            bot.sendMessage(chatId, '❌ خطا در جستجو!');
         }
         return;
     }
 
-    // آپلود فایل ادمین
     if (text) {
         const lines = text.split('\n');
         if (lines.length < 2) return;
@@ -232,7 +227,7 @@ bot.on('message', async (msg) => {
         const match = fileNameText.match(regex);
 
         if (match && downloadUrl.startsWith('http')) {
-            const loadingMsg = await bot.sendMessage(chatId, '⏳ در حال آنالیز سایز و شروع مکش...');
+            const loadingMsg = await bot.sendMessage(chatId, '⏳ در حال شروع مکش...');
 
             let animeName = match[1].trim();
             let season = match[2];
@@ -245,9 +240,12 @@ bot.on('message', async (msg) => {
                 const response = await axios({ method: 'get', url: downloadUrl, responseType: 'stream' });
 
                 const safeFileName = fileNameText.replace(/\s+/g, '-').replace(/\[/g, '-').replace(/\]/g, '').replace(/[^a-zA-Z0-9.\-_]/g, '');
-                const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
                 
-                const uploadRequest = s3.upload(params);
+                // بهینه‌سازی آپلود برای جلوگیری از کرش شدن سرور در فایل‌های حجیم
+                const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
+                const uploadOptions = { partSize: 10 * 1024 * 1024, queueSize: 1 }; // تکه‌های ۱۰ مگابایتی
+                
+                const uploadRequest = s3.upload(params, uploadOptions);
                 let lastUpdate = 0;
                 
                 uploadRequest.on('httpUploadProgress', (progress) => {
@@ -255,13 +253,15 @@ bot.on('message', async (msg) => {
                         let percent = Math.round((progress.loaded / totalSize) * 100);
                         percent = Math.min(100, Math.max(0, percent));
                         let now = Date.now();
-                        if (now - lastUpdate > 1500 || percent === 100) {
+                        // آپدیت نوار هر ۲ ثانیه برای جلوگیری از ارور تلگرام
+                        if (now - lastUpdate > 2000 || percent === 100) {
                             lastUpdate = now;
                             bot.editMessageText(`🔋 **در حال پمپاژ فایل به آروان‌کلود...**\n\n${getProgressBar(percent)}`, { chat_id: chatId, message_id: loadingMsg.message_id }).catch(() => {});
                         }
                     }
                 });
 
+                // منتظر پایان آپلود
                 await uploadRequest.promise();
                 const finalLink = `${BASE_URL}/${safeFileName}`;
 
@@ -271,7 +271,7 @@ bot.on('message', async (msg) => {
                 successMsg += `🏷 **نام تمیز شده:**\n\`${safeFileName}\`\n\n`;
                 successMsg += `🔗 **لینک شما:** ${finalLink}`;
 
-                delete memory['scanned_projects']; // پاک کردن کش تا انیمه جدید سریعا به جستجو اضافه شود
+                delete memory['scanned_projects']; 
                 
                 bot.sendMessage(chatId, successMsg, { 
                     parse_mode: 'Markdown',
@@ -281,9 +281,10 @@ bot.on('message', async (msg) => {
                         ]
                     }
                 });
-                memory[Date.now()] = { safeFileName: safeFileName }; // برای دکمه حذف
+                memory[Date.now()] = { safeFileName: safeFileName }; 
             } catch (error) {
-                bot.sendMessage(chatId, '❌ خطا در آپلود فایل!');
+                console.error(error);
+                bot.sendMessage(chatId, '❌ خطا در آپلود فایل! ممکنه حجم فایل برای سرور رایگان زیاد باشه یا فرمت نامعتبر باشه.');
             }
         }
     }
@@ -294,6 +295,12 @@ bot.on('callback_query', async (query) => {
     const userId = query.from.id;
     const messageId = query.message.message_id;
     const data = query.data;
+    const queryId = query.id;
+
+    // سپر ضد دکمه‌زنی تکراری (اسپم کلیک)
+    if (processedQueries.has(queryId)) return;
+    processedQueries.add(queryId);
+    setTimeout(() => processedQueries.delete(queryId), 10000); 
 
     if (data === 'check_join') {
         const isJoined = await checkForceJoin(userId);
@@ -319,7 +326,8 @@ bot.on('callback_query', async (query) => {
         return bot.sendMessage(chatId, '🔍 **لطفاً نام انیمه مورد نظر خود را بنویسید:**\n*(مثلاً: Renegade یا Immortal)*');
     }
 
-    if (data === 'proj_list') {
+    // دکمه کارهای پیشنهادی مستقیماً لیست پروژه‌های موجود در سرور را می‌آورد
+    if (data === 'proj_list' || data === 'suggested_posts') {
         bot.answerCallbackQuery(query.id, { text: '⏳ دریافت لیست انیمه‌ها از آروان‌کلود...' });
         try {
             const projects = await scanS3Projects();
@@ -328,7 +336,7 @@ bot.on('callback_query', async (query) => {
                 keyboard.push([{ text: `🎬 ${projects[slug].name}`, callback_data: `pselect_${slug}` }]);
             });
             if (keyboard.length === 0) return bot.sendMessage(chatId, '🗂 آرشیو خالی است!');
-            bot.sendMessage(chatId, '🗂 **لیست تمام انیمه‌های موجود در هاب:**', { reply_markup: { inline_keyboard: keyboard } });
+            bot.sendMessage(chatId, '✨ **لیست تمام کارهای موجود در هاب:**', { reply_markup: { inline_keyboard: keyboard } });
         } catch (err) {
             bot.sendMessage(chatId, '❌ خطا!');
         }
@@ -339,7 +347,7 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
         const projects = await scanS3Projects();
         const p = projects[slug];
-        if (!p) return bot.sendMessage(chatId, '❌ خطا!');
+        if (!p) return bot.sendMessage(chatId, '❌ خطا در بارگیری انیمه!');
 
         let textMsg = `🎬 **انیمه:** ${p.name}\n\n`;
         textMsg += `🎞 **تعداد ویدیوها:** ${p.files.length} فایل\n`;
@@ -442,14 +450,14 @@ bot.on('callback_query', async (query) => {
         if (fileExact) bot.sendMessage(chatId, `🔗 **لینک دانلود مستقیم قسمت ${epNum} (کیفیت ${qAlt}p):**\n\n\`${fileExact.link}\``, { parse_mode: 'Markdown' });
     }
 
-    // منوی مدیریت ادمین (فقط فایل‌ها)
+    // منوی ادمین
     if (data === 'list_files') {
         bot.answerCallbackQuery(query.id);
         try {
             const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME, MaxKeys: 15 }).promise();
             const files = s3Data.Contents || [];
-            if (files.length === 0) return bot.sendMessage(chatId, '📂 صندوقچه خالی است.');
-            let msg = `📁 **پنل مدیریت فایل چشمی:**\n\n`;
+            if (files.length === 0) return bot.sendMessage(chatId, '📂 خالی است.');
+            let msg = `📁 **۱۵ فایل اخیر:**\n\n`;
             let keyboard = [];
             let tempRow = [];
             files.forEach((file, idx) => {
@@ -466,14 +474,12 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
         try {
             const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME }).promise();
-            const files = s3Data.Contents || [];
             let totalBytes = 0;
-            files.forEach(f => totalBytes += f.Size);
+            (s3Data.Contents || []).forEach(f => totalBytes += f.Size);
             let totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
             let totalGB = (totalBytes / (1024 * 1024 * 1024)).toFixed(3);
-            let estimatedCost = Math.round(parseFloat(totalGB) * 200);
-
-            bot.sendMessage(chatId, `📊 **وضعیت صندوقچه ابری:**\n\n🗂 فایل‌ها: ${files.length}\n💾 حجم: ${totalGB} گیگابایت (${totalMB} MB)\n💸 هزینه تقریبـی ماهانه: ${estimatedCost.toLocaleString('fa-IR')} تومان`, { parse_mode: 'Markdown' });
+            let estCost = Math.round(parseFloat(totalGB) * 200);
+            bot.sendMessage(chatId, `📊 **حجم صندوقچه:** ${totalGB} GB (${totalMB} MB)\n💸 هزینه تخمینی ماهانه: ${estCost} تومان`);
         } catch (err) {}
     }
 
@@ -481,14 +487,13 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
-        if (!fileKey) return bot.sendMessage(chatId, '❌ خطا! اطلاعات فایل از حافظه پاک شده.');
-
-        bot.sendMessage(chatId, `🔍 **فایل شماره [ ${parseInt(idx) + 1} ]**\n\n📁 **نام:** \`${fileKey}\``, {
+        if (!fileKey) return bot.sendMessage(chatId, '❌ خطا!');
+        bot.sendMessage(chatId, `🔍 **فایل [ ${parseInt(idx) + 1} ]**\n\`${fileKey}\``, {
             parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
                     [{ text: '🔗 دریافت لینک مستقیم', callback_data: `getlink_${idx}` }],
-                    [{ text: '🗑 حذف کامل فایل', callback_data: `confirmdelete_${idx}` }],
+                    [{ text: '🗑 حذف', callback_data: `confirmdelete_${idx}` }],
                     [{ text: '⬅️ بازگشت به لیست', callback_data: 'list_files' }]
                 ]
             }
@@ -499,9 +504,7 @@ bot.on('callback_query', async (query) => {
         bot.answerCallbackQuery(query.id);
         const idx = data.split('_')[1];
         const fileKey = memory[`fkey_${idx}`];
-        if (!fileKey) return bot.sendMessage(chatId, '❌ خطا!');
-
-        bot.sendMessage(chatId, `🔗 **لینک مستقیم کپی‌شدنی:**\n\n\`${BASE_URL}/${fileKey}\``, { parse_mode: 'Markdown' });
+        if (fileKey) bot.sendMessage(chatId, `🔗 **لینک مستقیم:**\n\n\`${BASE_URL}/${fileKey}\``, { parse_mode: 'Markdown' });
     }
 
     if (data.startsWith('confirmdelete_')) {
@@ -511,7 +514,7 @@ bot.on('callback_query', async (query) => {
         try {
             await s3.deleteObject({ Bucket: BUCKET_NAME, Key: fileKey }).promise();
             delete memory['scanned_projects'];
-            bot.sendMessage(chatId, `🗑 **فایل با موفقیت حذف شد!**\n\n\`${fileKey}\``, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `🗑 حذف شد:\n\`${fileKey}\``, { parse_mode: 'Markdown' });
         } catch (err) {}
     }
 
