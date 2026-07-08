@@ -27,6 +27,9 @@ const s3 = new AWS.S3({
 const BUCKET_NAME = 'anime2-black';
 const BASE_URL = `https://${BUCKET_NAME}.s3.ir-thr-at1.arvanstorage.ir`;
 
+// تنظیمات کانال اسپانسر (قفل اجباری)
+const sponsorChannel = '@godofanimeblack';
+
 const firebaseConfig = {
     apiKey: "AIzaSyAeD2Pc5q_LgDeWDEC7JCQeDEAzFlZRhiQ",
     authDomain: "anime-black-cefc0.firebaseapp.com",
@@ -36,35 +39,28 @@ const firebaseConfig = {
     appId: "1:721270287867:web:87329ad1e081c8ca6fef5e"
 };
 
-if (!firebase.apps.length) {
-    firebase.initializeApp(firebaseConfig);
-}
+if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const cloudDb = firebase.firestore();
 cloudDb.settings({ experimentalForceLongPolling: true });
 
 const memory = {};
 const adminState = {}; 
 
-// تابع ساخت نمودار لودینگ جدید
 function getProgressBar(percent) {
     let filled = Math.round(percent / 10);
-    let bar = '■'.repeat(filled) + '□'.repeat(10 - filled) + percent + '%';
-    return bar;
+    return '■'.repeat(filled) + '□'.repeat(10 - filled) + ' ' + percent + '%';
 }
 
-// تابع هوشمند استخراج اطلاعات قالب پست (مقاوم در برابر تغییر کیبورد و آیکون‌ها)
 function parsePostTemplate(text) {
-    // نرمال‌سازی کامل حروف عربی، اردو و فارسی برای تطابق ۱۰۰ درصدی
     const normalized = text
         .replace(/ے/g, 'ی')
         .replace(/ي/g, 'ی')
         .replace(/ة/g, 'ه')
-        .replace(/\u200c/g, ' ') // حذف نیم‌فاصله‌های مزاحم
-        .replace(/\s+/g, ' ');   // استانداردسازی فاصله‌ها
+        .replace(/\u200c/g, ' ') 
+        .replace(/\s+/g, ' ');   
 
     const extract = (keywords) => {
         for (let kw of keywords) {
-            // ساخت ریجکس برای پیدا کردن کلید واژه بدون حساسیت به فاصله و کاراکترهای تزیینی
             const regex = new RegExp(`${kw}\\s*:\\s*(.*)`, 'i');
             const match = normalized.match(regex);
             if (match) return match[1].trim();
@@ -89,7 +85,6 @@ function parsePostTemplate(text) {
     };
 }
 
-// اسکنر هوشمند آروان‌کلود
 async function scanS3Projects() {
     if (memory['scanned_projects']) return memory['scanned_projects'];
     const s3Data = await s3.listObjectsV2({ Bucket: BUCKET_NAME }).promise();
@@ -113,12 +108,65 @@ async function scanS3Projects() {
     return projects;
 }
 
-console.log('🤖 جارویس (نسخه سیستم هوشمند نرمالایز) روشن شد...');
+// تابع بررسی عضویت اجباری در کانال تلگرام
+async function checkForceJoin(userId) {
+    try {
+        const member = await bot.getChatMember(sponsorChannel, userId);
+        const status = member.status;
+        return ['creator', 'administrator', 'member'].includes(status);
+    } catch (err) {
+        // در صورت ادمین نبودن ربات در کانال، برای جلوگیری از خرابی سیستم تایید میکنیم
+        console.error('خطای تایید کانال (احتمالا ربات در کانال ادمین نیست):', err);
+        return true; 
+    }
+}
+
+// تابع فرستادن پیام قفل کانال
+function sendLockMessage(chatId) {
+    const lockMsg = `❌ **رئیس عزیز، برای استفاده از ربات باید حتماً عضو کانال ما باشی!**\n\nلطفاً ابتدا روی لینک زیر کلیک کن، عضو شو و سپس دکمه **✅ تایید عضویت** را بزن: 👇`;
+    bot.sendMessage(chatId, lockMsg, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '📢 عضویت در کانال انیمه‌بلک', url: 'https://t.me/godofanimeblack' }],
+                [{ text: '✅ تایید عضویت', callback_data: 'check_join' }]
+            ]
+        }
+    });
+}
+
+// تابع فرستادن منوی اصلی شروع
+function sendStartMenu(chatId) {
+    bot.sendMessage(chatId, 'سلام به هاب انیمه‌بلک خوش آمدید! 🍷\nلطفاً از دکمه‌های زیر جهت کار با ربات استفاده کنید:', {
+        reply_markup: {
+            inline_keyboard: [
+                [
+                    { text: '🔍 جستجو انیمه', callback_data: 'search_start' },
+                    { text: '✨ کارهای پیشنهادی', callback_data: 'suggested_posts' } 
+                ],
+                [{ text: '📱 جستجوی سریع (Inline)', switch_inline_query: '' }]
+            ]
+        }
+    });
+}
+
+console.log('🤖 جارویس (نسخه رفع باگ و قفل کانال) روشن شد...');
 
 // اینلاین کوئری (جستجوی شناور روی کیبورد)
 bot.on('inline_query', async (query) => {
     const queryId = query.id;
+    const userId = query.from.id;
     const queryStr = query.query.toLowerCase().trim();
+
+    // بررسی عضویت در کانال برای اینلاین
+    const isJoined = await checkForceJoin(userId);
+    if (!isJoined) {
+        return bot.answerInlineQuery(queryId, [], {
+            switch_pm_text: '❌ ابتدا باید عضو کانال اسپانسر شوید!',
+            switch_pm_parameter: 'join',
+            cache_time: 0
+        });
+    }
 
     try {
         const doc = await cloudDb.collection("database").doc("main").get();
@@ -168,7 +216,37 @@ bot.on('inline_query', async (query) => {
 
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
+    const userId = msg.from.id;
     const text = msg.text;
+
+    // 🔴 اولویت اول: ریستارت اضطراری با دستور /start در هر مرحله‌ای
+    if (text === '/start') {
+        delete adminState[chatId]; // پاکسازی تمام بن‌بست‌های حافظه
+        
+        // بررسی قفل کانال
+        const isJoined = await checkForceJoin(userId);
+        if (!isJoined) {
+            return sendLockMessage(chatId);
+        }
+        
+        return sendStartMenu(chatId);
+    }
+
+    // منوی ادمین اختصاصی برای آپلود کردن (بدون رمز عبور ادمین)
+    if (text === '/admin') {
+        delete adminState[chatId];
+        return bot.sendMessage(chatId, '👑 **منوی مدیریت پروژه انیمه‌بلک فعال شد رئیس!**\nجهت آپلود، فایل دو خطی بفرست یا از دکمه‌های زیر استفاده کن:', {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: '📝 ایجاد پست جدید انیمه', callback_data: 'admin_create_post' }],
+                    [
+                        { text: '📁 مدیریت فایل‌ها (حذف چشمی)', callback_data: 'list_files' },
+                        { text: '📊 وضعیت صندوقچه', callback_data: 'box_status' }
+                    ]
+                ]
+            }
+        });
+    }
 
     // ایجاد پست جدید: دریافت عکس
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_post_img') {
@@ -179,12 +257,11 @@ bot.on('message', async (msg) => {
 
     // ایجاد پست جدید: دریافت متن و ساخت اسلاگ امن
     if (adminState[chatId] && adminState[chatId].state === 'waiting_for_post_text') {
-        bot.sendMessage(chatId, '⚙️ در حال تحلیل قالب متنی و ثبت در فایربیس ابری...');
+        bot.sendMessage(chatId, '⚙️ در حال تحلیل قالب متنی و ثبت در دیتابیس ابری...');
         try {
             const parsedData = parsePostTemplate(text);
             parsedData.img = adminState[chatId].img;
             
-            // تولید اسلاگ تمیز. اگر انگلیسی خالی بود از زمان استفاده میکند تا خطا ندهد
             let slug = parsedData.titleEn.toLowerCase().replace(/[^a-z0-9]/g, '-');
             if (!slug || slug.replace(/-/g, '') === '') {
                 slug = 'project-' + Date.now();
@@ -198,11 +275,11 @@ bot.on('message', async (msg) => {
             siteData.channelPosts[slug] = parsedData;
 
             await docRef.set(siteData);
-            delete adminState[chatId];
+            delete adminState[chatId]; // پاک کردن موفق وضعیت
             bot.sendMessage(chatId, `✅ **پست با موفقیت ثبت شد!**\n\n🎬 نام انگلیسی: ${parsedData.titleEn}\n🎥 نام فارسی: ${parsedData.titleFa}`);
         } catch (err) {
-            console.error(err);
-            bot.sendMessage(chatId, `❌ **خطا در ثبت پست!**\n\nعلت خطا:\n\`${err.message}\``, { parse_mode: 'Markdown' });
+            delete adminState[chatId]; // ریستارت در صورت بروز خطا برای خارج شدن از بن‌بست
+            bot.sendMessage(chatId, `❌ **خطا در ثبت پست! حافظه ربات ریستارت شد.**\n\nعلت خطا:\n\`${err.message}\``, { parse_mode: 'Markdown' });
         }
         return;
     }
@@ -247,37 +324,10 @@ bot.on('message', async (msg) => {
                 bot.sendMessage(chatId, '❌ متاسفانه انیمه‌ای با این مشخصات پیدا نکردم رئیس!');
             }
         } catch (err) {
+            delete adminState[chatId];
             bot.sendMessage(chatId, '❌ خطا در جستجو!');
         }
         return;
-    }
-
-    if (text === '/start') {
-        return bot.sendMessage(chatId, 'سلام به هاب انیمه‌بلک خوش آمدید! 🍷\nلطفاً از دکمه‌های زیر جهت کار با ربات استفاده کنید:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [
-                        { text: '🔍 جستجو انیمه', callback_data: 'search_start' },
-                        { text: '✨ کارهای پیشنهادی', callback_data: 'suggested_posts' } 
-                    ],
-                    [{ text: '📱 جستجوی سریع (Inline)', switch_inline_query: '' }]
-                ]
-            }
-        });
-    }
-
-    if (text === '/admin') {
-        return bot.sendMessage(chatId, '👑 **منوی مدیریت پروژه انیمه‌بلک فعال شد رئیس!**\nجهت آپلود، فایل دو خطی بفرست یا از دکمه‌های زیر استفاده کن:', {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: '📝 ایجاد پست جدید انیمه', callback_data: 'admin_create_post' }],
-                    [
-                        { text: '📁 مدیریت فایل‌ها (حذف چشمی)', callback_data: 'list_files' },
-                        { text: '📊 وضعیت صندوقچه', callback_data: 'box_status' }
-                    ]
-                ]
-            }
-        });
     }
 
     // فرآیند آپلود فایل ادمین
@@ -304,12 +354,7 @@ bot.on('message', async (msg) => {
 
                 const response = await axios({ method: 'get', url: downloadUrl, responseType: 'stream' });
 
-                const safeFileName = fileNameText
-                    .replace(/\s+/g, '-')
-                    .replace(/\[/g, '-')
-                    .replace(/\]/g, '')
-                    .replace(/[^a-zA-Z0-9.\-_]/g, '');
-
+                const safeFileName = fileNameText.replace(/\s+/g, '-').replace(/\[/g, '-').replace(/\]/g, '').replace(/[^a-zA-Z0-9.\-_]/g, '');
                 const params = { Bucket: BUCKET_NAME, Key: safeFileName, Body: response.data, ACL: 'public-read' };
                 
                 const uploadRequest = s3.upload(params);
@@ -347,7 +392,28 @@ bot.on('message', async (msg) => {
 
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
+    const userId = query.from.id;
     const data = query.data;
+
+    // تایید عضویت دستی کاربر
+    if (data === 'check_join') {
+        const isJoined = await checkForceJoin(userId);
+        if (isJoined) {
+            bot.answerCallbackQuery(query.id, { text: '🎉 عضویت شما تایید شد رئیس! خوش آمدید.' });
+            return sendStartMenu(chatId);
+        } else {
+            return bot.answerCallbackQuery(query.id, { text: '❌ رئیس، هنوز عضو کانال نشدی!', show_alert: true });
+        }
+    }
+
+    // دکمه‌های جستجو و کارهای پیشنهادی نیاز به عضویت دارند
+    if (data === 'search_start' || data === 'suggested_posts') {
+        const isJoined = await checkForceJoin(userId);
+        if (!isJoined) {
+            bot.answerCallbackQuery(query.id);
+            return sendLockMessage(chatId);
+        }
+    }
 
     if (data === 'search_start') {
         adminState[chatId] = { state: 'waiting_for_search_query' };
