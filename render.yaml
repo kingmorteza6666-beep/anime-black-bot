@@ -1,0 +1,10 @@
+services:
+  - type: worker
+    name: telegram-file-sorter
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
