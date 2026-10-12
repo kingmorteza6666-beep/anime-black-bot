@@ -1,13 +1,16 @@
 {
-  "name": "anime-black-bot",
-  "version": "2.2.0",
+  "name": "pikpak-direct-link-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot that resolves PikPak share links to downloadable URLs using an external resolver endpoint",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "axios": "^1.6.0",
-    "aws-sdk": "^2.1693.0",
-    "node-telegram-bot-api": "^0.64.0"
+    "axios": "^1.7.9",
+    "node-telegram-bot-api": "^0.66.0"
   }
 }
