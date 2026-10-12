@@ -1,0 +1,11 @@
+services:
+  file-sorter-bot:
+    build: .
+    container_name: telegram-file-sorter-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+    environment:
+      DB_PATH: /data/files.db
